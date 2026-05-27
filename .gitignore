@@ -1,0 +1,4 @@
+# Ignore Excel temporary lock files
+~$*.xlsm
+~$*.xlsx
+~$*.xls
