@@ -918,3 +918,868 @@ Private Function RenderVendorPreWlsSection(ws As Worksheet, dataBlock As Variant
 
     RenderVendorPreWlsSection = chartTopRow + 14
 End Function
+
+Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, targetPduFilter As Long, isTXBlock As Boolean, chartLeft As Double, chartTop As Double, chartWidth As Double, chartHeight As Double, bMin As Double, bMax As Double, bStep As Double)
+    Dim lats() As Double
+    Dim countVal As Long
+    Dim n As Long, r As Long, i As Long
+    Dim val As Double
+    Dim mapValChart As Variant
+    Dim rawLenVal As String
+    Dim mappedPduStr As String
+    
+    ReDim lats(1 To UBound(dataBlock, 1) * (UBound(rxCols) + 1))
+    countVal = 0
+    
+    For n = 1 To UBound(rxCols)
+        If stToVenMap.Exists(CStr(n)) Then
+            If stToVenMap(CStr(n)) = vendorID Then
+                For r = 1 To UBound(dataBlock, 1)
+                    Dim includeRow As Boolean
+                    includeRow = False
+                    
+                    If isTXBlock Then
+                        If CStr(dataBlock(r, txidIdx)) = CStr(n) Then
+                            includeRow = True
+                        End If
+                    Else
+                        rawLenVal = Trim$(CStr(dataBlock(r, lenColIdx)))
+                        
+                        If dictA2P.Exists(rawLenVal) Then
+                            mapValChart = dictA2P(rawLenVal)
+                            If IsArray(mapValChart) Then
+                                mappedPduStr = Trim$(CStr(mapValChart(1)))
+                            Else
+                                mappedPduStr = Trim$(CStr(mapValChart))
+                            End If
+                        Else
+                            mappedPduStr = rawLenVal
+                        End If
+                        
+                        If IsNumeric(mappedPduStr) Then
+                            If CLng(mappedPduStr) = targetPduFilter Then
+                                includeRow = True
+                            End If
+                        End If
+                    End If
+                    
+                    If includeRow Then
+                        If isTXBlock Then
+                            val = dataBlock(r, sfnIdx) - dataBlock(r, txqIdx)
+                        Else
+                            val = dataBlock(r, rxCols(n)) - dataBlock(r, sfnIdx)
+                        End If
+                        If val >= 0 Then
+                            countVal = countVal + 1
+                            lats(countVal) = val
+                        End If
+                    End If
+                Next r
+            End If
+        End If
+    Next n
+    
+    If countVal = 0 Then Exit Sub
+    ReDim Preserve lats(1 To countVal)
+    
+    Dim xLabels() As Double, yFreq() As Double, yCDF() As Double, bCounts() As Long
+    Dim nBins As Long
+    nBins = CLng((bMax - bMin) / bStep) + 1
+    If nBins > 2000 Then nBins = 2000
+    ReDim xLabels(1 To nBins)
+    ReDim yFreq(1 To nBins)
+    ReDim yCDF(1 To nBins)
+    ReDim bCounts(1 To nBins)
+    
+    For i = 1 To countVal
+        Dim bIdx As Long
+        bIdx = Int((lats(i) - bMin) / bStep) + 1
+        If bIdx >= 1 And bIdx <= nBins Then bCounts(bIdx) = bCounts(bIdx) + 1
+    Next i
+    
+    Dim curCum As Long
+    curCum = 0
+    For i = 1 To nBins
+        xLabels(i) = bMin + (i - 1) * bStep
+        yFreq(i) = bCounts(i)
+        curCum = curCum + bCounts(i)
+        yCDF(i) = curCum / countVal
+    Next i
+    
+    Dim targetMu As Double: targetMu = 0
+    Dim targetSigma As Double: targetSigma = 0
+    
+    If isTXBlock Then
+        If dictVC.Exists(vendorID) Then
+            Dim txParams As Variant
+            txParams = dictVC(vendorID)
+            targetMu = Abs(CDbl(txParams(0)))
+            targetSigma = CDbl(txParams(1))
+        End If
+    Else
+        Dim matrixKey As String
+        matrixKey = targetPduFilter & "|" & vendorID
+        If dictP2R.Exists(matrixKey) Then targetMu = dictP2R(matrixKey)
+        If dictP2Sigma.Exists(matrixKey) Then targetSigma = dictP2Sigma(matrixKey)
+    End If
+    
+    Dim cht As ChartObject
+    Set cht = ws.ChartObjects.Add(chartLeft, chartTop, chartWidth, chartHeight)
+    
+    With cht.Chart
+        .HasTitle = True
+        If isTXBlock Then
+            .ChartTitle.Text = "Vendor " & vendorID & " PRELIMINARY TX MAC LATENCY"
+        Else
+            .ChartTitle.Text = "Vendor " & vendorID & " PRELIMINARY RX MAC LATENCY (PDU: " & targetPduFilter & "B)"
+        End If
+        
+        With .SeriesCollection.NewSeries
+            .Name = "Frequency"
+            .Values = yFreq
+            .XValues = xLabels
+            .ChartType = xlColumnClustered
+        End With
+        .ChartGroups(1).GapWidth = 50
+        
+        With .SeriesCollection.NewSeries
+            .Name = "CDF"
+            .Values = yCDF
+            .XValues = xLabels
+            .ChartType = xlXYScatterLinesNoMarkers
+            .AxisGroup = xlSecondary
+            .Format.Line.ForeColor.RGB = RGB(0, 128, 0)
+        End With
+        
+        Dim baseTprocSeriesIndex As Long
+        Dim baseSigmaMinusSeriesIndex As Long
+        Dim baseSigmaPlusSeriesIndex As Long
+        baseTprocSeriesIndex = 0
+        baseSigmaMinusSeriesIndex = 0
+        baseSigmaPlusSeriesIndex = 0
+        
+        If targetMu > 0 Then
+            With .SeriesCollection.NewSeries
+                .Name = "Tproc"
+                .Values = Array(0, 1)
+                .XValues = Array(targetMu, targetMu)
+                .ChartType = xlXYScatterLinesNoMarkers
+                .AxisGroup = xlSecondary
+                .Format.Line.ForeColor.RGB = RGB(255, 0, 0)
+                .Format.Line.Weight = 1.5
+            End With
+            baseTprocSeriesIndex = .SeriesCollection.count
+        End If
+        
+        If targetMu > 0 And targetSigma > 0 And (targetMu - targetSigma) >= bMin Then
+            With .SeriesCollection.NewSeries
+                .Name = "Tproc - Sigma"
+                .Values = Array(0, 1)
+                .XValues = Array(targetMu - targetSigma, targetMu - targetSigma)
+                .ChartType = xlXYScatterLinesNoMarkers
+                .AxisGroup = xlSecondary
+                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
+                .Format.Line.DashStyle = msoLineDash
+            End With
+            baseSigmaMinusSeriesIndex = .SeriesCollection.count
+        End If
+        
+        If targetMu > 0 And targetSigma > 0 And (targetMu + targetSigma) <= bMax Then
+            With .SeriesCollection.NewSeries
+                .Name = "Tproc + Sigma"
+                .Values = Array(0, 1)
+                .XValues = Array(targetMu + targetSigma, targetMu + targetSigma)
+                .ChartType = xlXYScatterLinesNoMarkers
+                .AxisGroup = xlSecondary
+                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
+                .Format.Line.DashStyle = msoLineDash
+            End With
+            baseSigmaPlusSeriesIndex = .SeriesCollection.count
+        End If
+        
+        If Not isTXBlock Then
+            Dim chartHarqEnabled As Boolean
+            Dim chartHarqValue As Variant
+            chartHarqEnabled = False
+            
+            On Error Resume Next
+            chartHarqValue = ThisWorkbook.Names("HARQ").RefersToRange.Value
+            If Err.Number = 0 Then
+                If IsNumeric(chartHarqValue) Then
+                    chartHarqEnabled = (CLng(chartHarqValue) = 1)
+                End If
+            End If
+            Err.Clear
+            On Error GoTo 0
+            
+            If chartHarqEnabled And targetMu > 0 Then
+                Dim harqOffset As Long
+                Dim shiftedMu As Double
+                Dim shiftedSigmaLow As Double
+                Dim shiftedSigmaHigh As Double
+                
+                harqOffset = 1
+                Do While (targetMu + harqOffset) <= bMax
+                    shiftedMu = targetMu + harqOffset
+                    
+                    With .SeriesCollection.NewSeries
+                        .Name = "Tproc"
+                        .Values = Array(0, 1)
+                        .XValues = Array(shiftedMu, shiftedMu)
+                        .ChartType = xlXYScatterLinesNoMarkers
+                        .AxisGroup = xlSecondary
+                        .Format.Line.ForeColor.RGB = RGB(255, 0, 0)
+                        .Format.Line.Weight = 1.5
+                    End With
+                    
+                    If targetSigma > 0 Then
+                        shiftedSigmaLow = shiftedMu - targetSigma
+                        shiftedSigmaHigh = shiftedMu + targetSigma
+                        
+                        If shiftedSigmaLow >= bMin Then
+                            With .SeriesCollection.NewSeries
+                                .Name = "Tproc - Sigma"
+                                .Values = Array(0, 1)
+                                .XValues = Array(shiftedSigmaLow, shiftedSigmaLow)
+                                .ChartType = xlXYScatterLinesNoMarkers
+                                .AxisGroup = xlSecondary
+                                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
+                                .Format.Line.DashStyle = msoLineDash
+                            End With
+                        End If
+                        
+                        If shiftedSigmaHigh <= bMax Then
+                            With .SeriesCollection.NewSeries
+                                .Name = "Tproc + Sigma"
+                                .Values = Array(0, 1)
+                                .XValues = Array(shiftedSigmaHigh, shiftedSigmaHigh)
+                                .ChartType = xlXYScatterLinesNoMarkers
+                                .AxisGroup = xlSecondary
+                                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
+                                .Format.Line.DashStyle = msoLineDash
+                            End With
+                        End If
+                    End If
+                    
+                    harqOffset = harqOffset + 1
+                Loop
+            End If
+        End If
+        
+        With .Axes(xlCategory)
+            .HasTitle = True
+            .AxisTitle.Text = "Time (ms)"
+            .TickLabels.Orientation = 90
+        End With
+        
+        With .Axes(xlCategory, xlSecondary)
+            .MinimumScale = bMin - (bStep / 2)
+            .MaximumScale = (bMin + (nBins - 1) * bStep) + (bStep / 2)
+            .TickLabelPosition = xlNone
+            .Format.Line.Visible = msoFalse
+        End With
+        
+        With .Axes(xlValue)
+            .HasTitle = True
+            .AxisTitle.Text = "Frequency"
+        End With
+        
+        With .Axes(xlValue, xlSecondary)
+            .HasTitle = True
+            .AxisTitle.Text = "CDF Probability"
+            .MinimumScale = 0
+            .MaximumScale = 1
+        End With
+        
+        .HasLegend = True
+        .Legend.Position = xlLegendPositionBottom
+        
+        On Error Resume Next
+        If .HasLegend Then
+            Dim legendEntryCount As Long
+            legendEntryCount = .Legend.LegendEntries.count
+            For i = legendEntryCount To 1 Step -1
+                If i <> 1 And i <> 2 Then
+                    If i <> baseTprocSeriesIndex And i <> baseSigmaMinusSeriesIndex And i <> baseSigmaPlusSeriesIndex Then
+                        .Legend.LegendEntries(i).Delete
+                    End If
+                End If
+            Next i
+        End If
+        On Error GoTo 0
+    End With
+End Sub
+
+Private Sub WriteSingleLatencySummary(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, targetPduFilter As Long, isTXBlock As Boolean, outputRow As Long, outputCol As Long)
+    Dim lats() As Double
+    Dim countVal As Long
+    Dim n As Long, r As Long, i As Long
+    Dim val As Double
+    Dim mapValSummary As Variant
+    Dim rawLenVal As String
+    Dim mappedPduStr As String
+
+    ReDim lats(1 To UBound(dataBlock, 1) * (UBound(rxCols) + 1))
+    countVal = 0
+
+    For n = 1 To UBound(rxCols)
+        If stToVenMap.Exists(CStr(n)) Then
+            If stToVenMap(CStr(n)) = vendorID Then
+                For r = 1 To UBound(dataBlock, 1)
+                    Dim includeRow As Boolean
+                    includeRow = False
+
+                    If isTXBlock Then
+                        If CStr(dataBlock(r, txidIdx)) = CStr(n) Then
+                            includeRow = True
+                        End If
+                    Else
+                        rawLenVal = Trim$(CStr(dataBlock(r, lenColIdx)))
+                        If dictA2P.Exists(rawLenVal) Then
+                            mapValSummary = dictA2P(rawLenVal)
+                            If IsArray(mapValSummary) Then
+                                mappedPduStr = Trim$(CStr(mapValSummary(1)))
+                            Else
+                                mappedPduStr = Trim$(CStr(mapValSummary))
+                            End If
+                        Else
+                            mappedPduStr = rawLenVal
+                        End If
+
+                        If IsNumeric(mappedPduStr) Then
+                            If CLng(mappedPduStr) = targetPduFilter Then
+                                includeRow = True
+                            End If
+                        End If
+                    End If
+
+                    If includeRow Then
+                        If isTXBlock Then
+                            val = dataBlock(r, sfnIdx) - dataBlock(r, txqIdx)
+                        Else
+                            val = dataBlock(r, rxCols(n)) - dataBlock(r, sfnIdx)
+                        End If
+                        If val >= 0 Then
+                            countVal = countVal + 1
+                            lats(countVal) = val
+                        End If
+                    End If
+                Next r
+            End If
+        End If
+    Next n
+
+    If countVal = 0 Then Exit Sub
+    ReDim Preserve lats(1 To countVal)
+
+    SortDoubleArray lats
+
+    Dim sumV As Double, meanV As Double, sumSq As Double, stDevVal As Double
+    Dim p95 As Double, p99 As Double, maxC As Long, curC As Long, mVal As Double
+
+    sumV = 0
+    For i = 1 To countVal
+        sumV = sumV + lats(i)
+    Next i
+    meanV = sumV / countVal
+
+    If countVal > 1 Then
+        sumSq = 0
+        For i = 1 To countVal
+            sumSq = sumSq + (meanV - lats(i)) ^ 2
+        Next i
+        stDevVal = Sqr(sumSq / (countVal - 1))
+    Else
+        stDevVal = 0
+    End If
+
+    p95 = lats(WorksheetFunction.Max(1, Int(countVal * 0.95)))
+    p99 = lats(WorksheetFunction.Max(1, Int(countVal * 0.99)))
+    maxC = 1
+    curC = 1
+    mVal = lats(1)
+
+    For i = 2 To countVal
+        If lats(i) = lats(i - 1) Then
+            curC = curC + 1
+        Else
+            curC = 1
+        End If
+        If curC > maxC Then
+            maxC = curC
+            mVal = lats(i)
+        End If
+    Next i
+
+    Dim rowPtr As Long
+    rowPtr = outputRow
+
+    ws.Cells(rowPtr, outputCol).Value = "MIN"
+    ws.Cells(rowPtr, outputCol + 1).Value = lats(1)
+    rowPtr = rowPtr + 1
+
+    ws.Cells(rowPtr, outputCol).Value = "MAX"
+    ws.Cells(rowPtr, outputCol + 1).Value = lats(countVal)
+    rowPtr = rowPtr + 1
+
+    ws.Cells(rowPtr, outputCol).Value = "MEAN"
+    ws.Cells(rowPtr, outputCol + 1).Value = meanV
+    rowPtr = rowPtr + 1
+
+    ws.Cells(rowPtr, outputCol).Value = "Std. Dev."
+    ws.Cells(rowPtr, outputCol + 1).Value = stDevVal
+    rowPtr = rowPtr + 1
+
+    ws.Cells(rowPtr, outputCol).Value = "MODE"
+    ws.Cells(rowPtr, outputCol + 1).Value = mVal
+    rowPtr = rowPtr + 1
+
+    ws.Cells(rowPtr, outputCol).Value = "95th%"
+    ws.Cells(rowPtr, outputCol + 1).Value = p95
+    rowPtr = rowPtr + 1
+
+    ws.Cells(rowPtr, outputCol).Value = "99th%"
+    ws.Cells(rowPtr, outputCol + 1).Value = p99
+
+    ws.Cells(outputRow, outputCol).Resize(8, 2).HorizontalAlignment = xlRight
+End Sub
+
+
+Private Sub LoadDictionariesFromThisWorkbook()
+    Dim vArr As Variant, i As Long
+    vArr = Null
+    
+    Dim ws As Worksheet
+    Dim wsPdu As Worksheet
+    Set ws = ThisWorkbook.Sheets("Exp Config & Data Proc Params")
+    Set wsPdu = ThisWorkbook.Sheets("PDU Size Table")
+    
+    On Error Resume Next
+    vArr = ws.Range("StationID2VendorID").Value
+    If Err.Number <> 0 Then
+        MsgBox "Critical Error: Defined range 'StationID2VendorID' missing from configuration sheet.", vbCritical, "Mapping Failure"
+        Err.Clear
+        Exit Sub
+    End If
+    On Error GoTo 0
+    
+    For i = 1 To UBound(vArr, 1)
+        If Not IsEmpty(vArr(i, 1)) Then
+            dictS2V(UCase$(Trim$(CStr(vArr(i, 1))))) = Trim$(CStr(vArr(i, 2)))
+        End If
+    Next i
+    
+    Dim loVendor As ListObject
+    On Error Resume Next
+    Set loVendor = ws.ListObjects("VendorID2TXTproc")
+    On Error GoTo 0
+    
+    If Not loVendor Is Nothing Then
+        If Not loVendor.DataBodyRange Is Nothing Then
+            vArr = loVendor.DataBodyRange.Value
+            For i = 1 To UBound(vArr, 1)
+                dictVC(Trim$(CStr(vArr(i, 1)))) = Array(vArr(i, 2), vArr(i, 3))
+            Next i
+        End If
+    Else
+        Dim fallBackRange As Range
+        Set fallBackRange = ws.Cells.Find("VendorID", LookIn:=xlValues, LookAt:=xlWhole)
+        If Not fallBackRange Is Nothing Then
+            Dim lastRow As Long
+            lastRow = ws.Cells(ws.rows.count, fallBackRange.Column).End(xlUp).Row
+            If lastRow > fallBackRange.Row Then
+                vArr = ws.Range(fallBackRange.Offset(1, 0), ws.Cells(lastRow, fallBackRange.Column + 2)).Value
+                For i = 1 To UBound(vArr, 1)
+                    If Not IsEmpty(vArr(i, 1)) Then
+                        dictVC(Trim$(CStr(vArr(i, 1)))) = Array(vArr(i, 2), vArr(i, 3))
+                    End If
+                Next i
+            End If
+        Else
+            MsgBox "Table structure 'VendorID2TXTproc' not found.", vbExclamation, "Configuration Alert"
+        End If
+    End If
+    
+    vArr = wsPdu.ListObjects("ADU2NumSubchansTable").DataBodyRange.Value
+    For i = 1 To UBound(vArr, 1)
+        Dim aduKey As String
+        aduKey = Trim$(CStr(vArr(i, 1)))
+        If aduKey <> "" And IsNumeric(aduKey) Then
+            dictA2P(aduKey) = Array(CLng(vArr(i, 2)), CLng(vArr(i, 3)))
+        End If
+    Next i
+    
+    Dim loPduMatrix As ListObject
+    On Error Resume Next
+    Set loPduMatrix = ws.ListObjects("PDU2RXTprocVendorID")
+    On Error GoTo 0
+    
+    If loPduMatrix Is Nothing Then
+        MsgBox "Critical Excel Table structure 'PDU2RXTprocVendorID' is completely missing.", vbCritical, "Data Integrity Error"
+        Exit Sub
+    End If
+    
+    For i = 1 To loPduMatrix.ListRows.count
+        Dim pKey As String
+        pKey = Trim$(CStr(loPduMatrix.DataBodyRange.Cells(i, 1).Value))
+        If pKey <> "" And IsNumeric(pKey) Then
+            Dim v1Time As Variant, v1Sig As Variant
+            Dim v2Time As Variant, v2Sig As Variant
+            Dim v3Time As Variant, v3Sig As Variant
+            
+            v1Time = loPduMatrix.DataBodyRange.Cells(i, 2).Value
+            v1Sig = loPduMatrix.DataBodyRange.Cells(i, 3).Value
+            If IsNumeric(v1Time) And val(v1Time) > 0 Then dictP2R(pKey & "|1") = CDbl(v1Time)
+            If IsNumeric(v1Sig) And val(v1Sig) > 0 Then dictP2Sigma(pKey & "|1") = CDbl(v1Sig)
+            
+            v2Time = loPduMatrix.DataBodyRange.Cells(i, 4).Value
+            v2Sig = loPduMatrix.DataBodyRange.Cells(i, 5).Value
+            If IsNumeric(v2Time) And val(v2Time) > 0 Then dictP2R(pKey & "|2") = CDbl(v2Time)
+            If IsNumeric(v2Sig) And val(v2Sig) > 0 Then dictP2Sigma(pKey & "|2") = CDbl(v2Sig)
+            
+            v3Time = loPduMatrix.DataBodyRange.Cells(i, 6).Value
+            v3Sig = loPduMatrix.DataBodyRange.Cells(i, 7).Value
+            If IsNumeric(v3Time) And val(v3Time) > 0 Then dictP2R(pKey & "|3") = CDbl(v3Time)
+            If IsNumeric(v3Sig) And val(v3Sig) > 0 Then dictP2Sigma(pKey & "|3") = CDbl(v3Sig)
+        End If
+    Next i
+End Sub
+
+Private Sub ProcessInitialEstimation(ByVal r As Long)
+    Dim txqVal As Double, vID As Variant, con As Variant
+    txqVal = CDbl(data(r, idxTXQ))
+    If txqVal = 0 Then Exit Sub
+    
+    Dim sID As String
+    sID = UCase$(Trim$(CStr(data(r, idxTXID))))
+    If Not dictS2V.Exists(sID) Then Exit Sub
+    
+    vID = dictS2V(sID)
+    con = dictVC(vID)
+    data(r, idxSFNCol) = CLng(Round(txqVal + con(0), 0))
+End Sub
+
+Private Function GetSingleRowWLSCost(ByVal r As Long, ByVal tSFN As Long) As Double
+    Dim txQ As Double, vID As Variant, con As Variant, cost As Double, k As Integer
+    Dim rawLenVal As Variant
+    Dim cleanAduStr As String, cleanPduSizeStr As String, targetPduKey As String
+    Dim aduMapVal As Variant
+    
+    If IsEmpty(data(r, idxTXID)) Or Trim$(CStr(data(r, idxTXID))) = "" Then
+        GetSingleRowWLSCost = 0
+        Exit Function
+    End If
+    
+    txQ = CDbl(data(r, idxTXQ))
+    
+    Dim sID As String
+    sID = UCase$(Trim$(CStr(data(r, idxTXID))))
+    If Not dictS2V.Exists(sID) Then
+        GetSingleRowWLSCost = 0
+        Exit Function
+    End If
+    
+    vID = dictS2V(sID)
+    con = dictVC(vID)
+    
+    If con(1) <> 0 Then
+        cost = ((tSFN - txQ - con(0)) ^ 2) / (con(1) ^ 2)
+    Else
+        cost = 0
+    End If
+    
+    rawLenVal = data(r, idxLEN)
+    If Not IsEmpty(rawLenVal) And Trim$(CStr(rawLenVal)) <> "" Then
+        cleanAduStr = Trim$(CStr(rawLenVal))
+        
+        If dictA2P.Exists(cleanAduStr) Then
+            aduMapVal = dictA2P(cleanAduStr)
+            If IsArray(aduMapVal) Then
+                cleanPduSizeStr = Trim$(CStr(aduMapVal(1)))
+            Else
+                cleanPduSizeStr = Trim$(CStr(aduMapVal))
+            End If
+        Else
+            cleanPduSizeStr = cleanAduStr
+        End If
+        
+        If IsNumeric(cleanPduSizeStr) And CLng(cleanPduSizeStr) > 0 Then
+            uniquePduSizes(CLng(cleanPduSizeStr)) = True
+        End If
+        
+        For k = 1 To activeRxCount
+            If IsNumeric(data(r, rxDataColIdx(k))) And data(r, rxDataColIdx(k)) <> 0 Then
+                Dim rxStationStr As String
+                rxStationStr = UCase$(Trim$(CStr(rxStationIDs(k))))
+                
+                If dictS2V.Exists(rxStationStr) Then
+                    Dim rxVendorID As Variant
+                    rxVendorID = dictS2V(rxStationStr)
+                    targetPduKey = cleanPduSizeStr & "|" & rxVendorID
+                    
+                    If tSFN > 0 Then
+                        If dictP2R.Exists(targetPduKey) Then
+                            Dim rxSigma As Double
+                            If dictP2Sigma.Exists(targetPduKey) Then
+                                rxSigma = dictP2Sigma(targetPduKey)
+                            Else
+                                rxSigma = con(1)
+                            End If
+                            
+                            If rxSigma > 0 Then
+                                cost = cost + ((CDbl(data(r, rxDataColIdx(k))) - dictP2R(targetPduKey)) ^ 2) / (rxSigma ^ 2)
+                            End If
+                        Else
+                            Dim alertToken As String
+                            alertToken = "(" & cleanPduSizeStr & ", Vendor" & rxVendorID & ")"
+                            If Not missingPduSizes.Exists(alertToken) Then missingPduSizes(alertToken) = True
+                        End If
+                    End If
+                End If
+            End If
+        Next k
+    End If
+    
+    GetSingleRowWLSCost = cost
+End Function
+
+Private Sub AddToMap(ByVal rowIdx As Long, ByVal sfnVal As Long)
+    If Not sfnMap.Exists(sfnVal) Then Set sfnMap(sfnVal) = New Collection
+    sfnMap(sfnVal).Add rowIdx
+End Sub
+
+Private Sub WriteDiagnosticLog(ws As Worksheet, ByVal totalRows As Long, ByVal calcTime As Double, ByVal pCount As Integer, ByVal startRowOffset As Long)
+    Dim sRow As Long
+    sRow = startRowOffset
+    
+    ws.Cells(sRow, 1).Value = "WLS POST-OPTIMIZATION EXECUTION PROFILE SUMMARY"
+    ws.Cells(sRow, 1).Font.Bold = True
+    ws.Cells(sRow, 1).Font.Size = 12
+    
+    ws.Cells(sRow + 2, 1).Resize(5, 1).Value = Application.WorksheetFunction.Transpose(Array( _
+        "Log Execution Timestamp:", _
+        "Total Synchronized Records:", _
+        "Resolution Pass Count:", _
+        "Total Nudge Operations:", _
+        "WLS Phase Compute Latency:" _
+    ))
+    ws.Cells(sRow + 2, 1).Resize(5, 1).Font.Bold = True
+    
+    ws.Cells(sRow + 2, 2).Value = Now
+    ws.Cells(sRow + 3, 2).Value = totalRows
+    ws.Cells(sRow + 4, 2).Value = pCount
+    ws.Cells(sRow + 5, 2).Value = nudgeCount
+    ws.Cells(sRow + 6, 2).Value = calcTime
+    ws.Cells(sRow + 6, 2).NumberFormat = "0.000"" s"""
+    ws.Cells(sRow + 3, 2).Resize(3, 1).NumberFormat = "#,##0"
+    
+    If nudgeCount > 0 Then
+        ws.Cells(sRow + 8, 1).Value = "DETAILED RECORD OPTIMIZATION NUDGE REGISTRY"
+        ws.Cells(sRow + 8, 1).Font.Bold = True
+        ws.Cells(sRow + 9, 1).Resize(1, 4).Value = Array("Table Row Index", "Station TX_ID", "Prior SFN Map", "Assigned SFN Map")
+        ws.Cells(sRow + 9, 1).Resize(1, 4).Font.Bold = True
+        
+        Dim dumpLimit As Long
+        dumpLimit = IIf(nudgeCount > 50000, 50000, nudgeCount)
+        
+        Dim sliceArr() As Variant
+        ReDim sliceArr(1 To dumpLimit, 1 To 4)
+        
+        Dim idxWalk As Long, colWalk As Long
+        For idxWalk = 1 To dumpLimit
+            For colWalk = 1 To 4
+                sliceArr(idxWalk, colWalk) = nudgeLog(idxWalk, colWalk)
+            Next colWalk
+        Next idxWalk
+        
+        ws.Cells(sRow + 10, 1).Resize(dumpLimit, 4).Value = sliceArr
+        ws.Cells(sRow + 10, 1).Resize(dumpLimit, 1).NumberFormat = "#,##0"
+    End If
+    
+    ws.Columns("A:D").AutoFit
+End Sub
+
+Private Sub RunPipeline(ByVal choice As String, ByRef perfLog As Object)
+    Dim i As Integer, mName As String, stepStart As Double
+    For i = 1 To Len(choice)
+        mName = ""
+        Select Case UCase$(Mid$(choice, i, 1))
+            Case "1": mName = "GenerateLatencyAnalysis"
+            Case "2": mName = "GenerateLoadRxEfficiencyAnalysis"
+            Case "3": mName = "GenerateLoadTxEfficiencyAnalysis"
+            Case "4": mName = "GenerateRxGapPerAppAnalysis"
+            Case "5": mName = "GenerateTxGapPerAppAnalysis"
+            Case "6": mName = "GenerateTX_SFN_delta_histograms"
+            Case "7": mName = "GenerateRSSIMatrices"
+            Case "8": mName = "GenerateSpectralEfficiencyAnalysis"
+        End Select
+        
+        If mName <> "" Then
+            stepStart = MicroTimer()
+            On Error Resume Next
+            Application.Run mName, perfLog
+            If Not perfLog.Exists(mName) Then perfLog(mName) = MicroTimer() - stepStart
+            On Error GoTo 0
+        End If
+    Next i
+End Sub
+
+Private Sub SortVariantLongArray(ByRef arr As Variant)
+    On Error GoTo SafeExit
+    If IsEmpty(arr) Then Exit Sub
+    If UBound(arr) <= LBound(arr) Then Exit Sub
+    
+    Dim changed As Boolean
+    Dim i As Long
+    Dim tmp As Variant
+    
+    Do
+        changed = False
+        For i = LBound(arr) To UBound(arr) - 1
+            If CLng(arr(i)) > CLng(arr(i + 1)) Then
+                tmp = arr(i)
+                arr(i) = arr(i + 1)
+                arr(i + 1) = tmp
+                changed = True
+            End If
+        Next i
+    Loop While changed
+SafeExit:
+End Sub
+
+Private Sub SortVariantStringArray(ByRef arr As Variant)
+    On Error GoTo SafeExit
+    If IsEmpty(arr) Then Exit Sub
+    If UBound(arr) <= LBound(arr) Then Exit Sub
+    
+    Dim changed As Boolean
+    Dim i As Long
+    Dim tmp As Variant
+    
+    Do
+        changed = False
+        For i = LBound(arr) To UBound(arr) - 1
+            If CStr(arr(i)) > CStr(arr(i + 1)) Then
+                tmp = arr(i)
+                arr(i) = arr(i + 1)
+                arr(i + 1) = tmp
+                changed = True
+            End If
+        Next i
+    Loop While changed
+SafeExit:
+End Sub
+
+Private Sub SortDoubleArray(ByRef arr() As Double)
+    Dim pivot As Double, tmpSwap As Double, tmpLow As Long, tmpHi As Long
+    Dim stackLow(1 To 64) As Long, stackHi(1 To 64) As Long, stackPtr As Long
+    Dim i As Long, r As Long
+    
+    stackPtr = 1
+    stackLow(1) = LBound(arr)
+    stackHi(1) = UBound(arr)
+    
+    Do While stackPtr > 0
+        tmpLow = stackLow(stackPtr)
+        tmpHi = stackHi(stackPtr)
+        stackPtr = stackPtr - 1
+        
+        Do While tmpLow < tmpHi
+            pivot = arr((tmpLow + tmpHi) \ 2)
+            i = tmpLow
+            r = tmpHi
+            
+            Do While i <= r
+                Do While arr(i) < pivot
+                    i = i + 1
+                Loop
+                Do While arr(r) > pivot
+                    r = r - 1
+                Loop
+                If i <= r Then
+                    tmpSwap = arr(i)
+                    arr(i) = arr(r)
+                    arr(r) = tmpSwap
+                    i = i + 1
+                    r = r - 1
+                End If
+            Loop
+            
+            If r - tmpLow > tmpHi - i Then
+                If tmpLow < r Then
+                    stackPtr = stackPtr + 1
+                    stackLow(stackPtr) = tmpLow
+                    stackHi(stackPtr) = r
+                End If
+                tmpLow = i
+            Else
+                If i < tmpHi Then
+                    stackPtr = stackPtr + 1
+                    stackLow(stackPtr) = i
+                    stackHi(stackPtr) = tmpHi
+                End If
+                tmpHi = r
+            End If
+        Loop
+    Loop
+End Sub
+
+Private Function DblMod(ByVal dividend As Double, ByVal divisor As Double) As Double
+    If divisor = 0 Then
+        DblMod = 0
+        Exit Function
+    End If
+    DblMod = dividend - (Fix(dividend / divisor) * divisor)
+End Function
+
+Private Function PromptAndApplyVendorTxParameterUpdates() As Boolean
+    Dim vKey As Variant
+    Dim currentTxVals As Variant
+    Dim txPromptMsg As String
+    Dim txUserResponse As String
+    Dim txSplit() As String
+    Dim newTxMean As Double
+    Dim newTxSigma As Double
+    Dim changed As Boolean
+
+    changed = False
+
+    If dictVC Is Nothing Then
+        PromptAndApplyVendorTxParameterUpdates = False
+        Exit Function
+    End If
+
+    If dictVC.count = 0 Then
+        PromptAndApplyVendorTxParameterUpdates = False
+        Exit Function
+    End If
+
+    For Each vKey In dictVC.Keys
+        currentTxVals = dictVC(CStr(vKey))
+
+        txPromptMsg = "Current TX parameters for Vendor " & vKey & ":" & vbCrLf & _
+                      "Mean (Tproc): " & currentTxVals(0) & " ms" & vbCrLf & _
+                      "Sigma: " & currentTxVals(1) & " ms" & vbCrLf & vbCrLf & _
+                      "Enter new values as mean,sigma to update." & vbCrLf & _
+                      "Leave blank to keep current values."
+
+        txUserResponse = InputBox(txPromptMsg, _
+                                  "TX Parameter Modification - Vendor " & vKey, _
+                                  currentTxVals(0) & "," & currentTxVals(1))
+
+        If Trim$(txUserResponse) <> "" Then
+            txSplit = Split(txUserResponse, ",")
+            If UBound(txSplit) = 1 Then
+                If IsNumeric(Trim$(txSplit(0))) And IsNumeric(Trim$(txSplit(1))) Then
+                    newTxMean = CDbl(Trim$(txSplit(0)))
+                    newTxSigma = CDbl(Trim$(txSplit(1)))
+                    dictVC(CStr(vKey)) = Array(newTxMean, newTxSigma)
+                    changed = True
+                End If
+            End If
+        End If
+    Next vKey
+
+    PromptAndApplyVendorTxParameterUpdates = changed
+End Function
+
