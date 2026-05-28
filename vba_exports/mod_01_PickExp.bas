@@ -451,7 +451,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
 
     Dim targetR As Long
     Dim txParamsChanged As Boolean
-    Dim txLoopChanged As Boolean
     Dim continueLoop As Boolean
     Dim linRegCompleted As Boolean
     Dim linRegNeedsRerun As Boolean
@@ -460,9 +459,10 @@ runTX_SFN_CR = (crChoice <> vbNo)
 
     continueLoop = True
     prelimRendered = False
+    linRegCompleted = False
 
     Do While continueLoop
-        txLoopChanged = False
+        txParamsChanged = False
         linRegNeedsRerun = False
 
         ' -------------------------------
@@ -698,6 +698,21 @@ runTX_SFN_CR = (crChoice <> vbNo)
         End If
         
     Loop While parameterChanged
+    
+        linRegNeedsRerun = True
+        Do While linRegNeedsRerun
+            Run_LinReg_TXQTIMEvsTX_SFN_est
+            linRegCompleted = True
+            
+            txParamsChanged = (MsgBox("Run preliminary estimation again to revise TX/RX parameters before re-running LinReg?", _
+                                      vbYesNo + vbQuestion, _
+                                      "LinReg Parameter Review") = vbYes)
+            
+            linRegNeedsRerun = False
+        Loop
+        
+        continueLoop = txParamsChanged
+    Loop
     
     totalProcTime = MicroTimer() - startTime
     
