@@ -450,54 +450,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
     startTime = MicroTimer()
 
     Dim targetR As Long
-    Dim txParamsChanged As Boolean
-    Dim txLoopChanged As Boolean
-    Dim continueLoop As Boolean
-    Dim linRegCompleted As Boolean
-    Dim linRegNeedsRerun As Boolean
     Dim currentTX As String
-    Dim prelimRendered As Boolean
 
-    continueLoop = True
-    prelimRendered = False
-
-    Do While continueLoop
-        txLoopChanged = False
-        linRegNeedsRerun = False
-
-        ' -------------------------------
-        ' 1) INITIAL SFN ESTIMATION PASS
-        ' -------------------------------
-        Set sfnMap = CreateObject("Scripting.Dictionary")
-        For targetR = 1 To filteredCount
-            GetSingleRowWLSCost targetR, 0
-            ProcessInitialEstimation targetR
-            AddToMap targetR, CLng(data(targetR, idxSFNCol))
-        Next targetR
-
-        ' ------------------------------------------------
-        ' 2) PRELIMINARY RX/TX LATENCY OUTPUT FIRST
-        ' ------------------------------------------------
-        If Not prelimRendered Then
-            Dim wsLogSheet As Worksheet
-            On Error Resume Next
-            Set wsLogSheet = ThisWorkbook.Sheets("TX_SFN est Log")
-            If wsLogSheet Is Nothing Then
-                Set wsLogSheet = ThisWorkbook.Sheets.Add(Before:=ThisWorkbook.Sheets("ExpResults"))
-                wsLogSheet.Name = "TX_SFN est Log"
-            End If
-            On Error GoTo 0
-            prelimRendered = True
-        End If
-
-        ' ============================================================
-        ' IMPORTANT:
-        ' Keep your existing preliminary plot/table rendering code HERE
-        ' exactly as it already is, but do NOT call LinReg yet.
-        ' ============================================================
-    
-     
-    
+    Dim wsLogSheet As Worksheet
     On Error Resume Next
     Set wsLogSheet = ThisWorkbook.Sheets("TX_SFN est Log")
     If wsLogSheet Is Nothing Then
@@ -505,11 +460,11 @@ runTX_SFN_CR = (crChoice <> vbNo)
         wsLogSheet.Name = "TX_SFN est Log"
     End If
     On Error GoTo 0
-    
+
     Dim oldCht As ChartObject
     Dim pduKeys As Variant
     pduKeys = uniquePduSizes.Keys
-    
+
     Dim pduIdx As Long
     Dim runningRowPos As Long
     Dim vendorKeys As Variant
@@ -524,17 +479,31 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Dim anyParameterChanged As Boolean
     Dim rowWalk As Long
     Dim currentFilterPdu As Long
-    
+
     Set loTxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("VendorID2TXTproc")
     Set loRxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("PDU2RXTprocVendorID")
-    
+
     vendorKeys = uniqueVendors.Keys
     SortVariantLongArray pduKeys
     SortVariantStringArray vendorKeys
-    
+
     anyParameterChanged = False
-    
+
     Do
+        ' -------------------------------
+        ' 1) ESTIMATE TX_SFN
+        ' -------------------------------
+        Application.ScreenUpdating = False
+        Set sfnMap = CreateObject("Scripting.Dictionary")
+        For targetR = 1 To filteredCount
+            GetSingleRowWLSCost targetR, 0
+            Estimate_TX_SFN targetR
+            AddToMap targetR, CLng(data(targetR, idxSFNCol))
+        Next targetR
+
+        ' ------------------------------------------------
+        ' 2) PRELIMINARY RX/TX LATENCY OUTPUT
+        ' ------------------------------------------------
         wsLogSheet.Cells.Clear
         For Each oldCht In wsLogSheet.ChartObjects
             oldCht.Delete
@@ -580,7 +549,17 @@ runTX_SFN_CR = (crChoice <> vbNo)
         Do While Timer < renderWait
             DoEvents
         Loop
-        
+
+        ' ------------------------------------------------
+        ' 3) RUN LINREG (residual histograms per vendor)
+        ' ------------------------------------------------
+        targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
+        targetTable.DataBodyRange.Value = data
+        Run_LinReg_TXQTIMEvsTX_SFN_est
+
+        ' ------------------------------------------------
+        ' 4) PROMPT FOR PARAMETER CHANGES PER VENDOR
+        ' ------------------------------------------------
         parameterChanged = False
         
         For Each vKey In uniqueVendors.Keys
@@ -686,16 +665,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
                 End If
             Next vKey
         Next pduIdx
-        
-        If parameterChanged Then
-            Application.ScreenUpdating = False
-            Set sfnMap = CreateObject("Scripting.Dictionary")
-            For targetR = 1 To filteredCount
-                GetSingleRowWLSCost targetR, 0
-                ProcessInitialEstimation targetR
-                AddToMap targetR, CLng(data(targetR, idxSFNCol))
-            Next targetR
-        End If
         
     Loop While parameterChanged
     
