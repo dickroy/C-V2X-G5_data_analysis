@@ -698,7 +698,11 @@ runTX_SFN_CR = (crChoice <> vbNo)
         End If
         
     Loop While parameterChanged
-    
+
+    Run_LinReg_TXQTIMEvsTX_SFN_est linRegNeedsRerun
+    continueLoop = linRegNeedsRerun
+Loop
+
     totalProcTime = MicroTimer() - startTime
     
     
@@ -1208,4 +1212,104 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
         End If
         On Error GoTo 0
     End With
+End Sub
+
+Private Sub LoadDictionariesFromThisWorkbook()
+    Dim wsCfg As Worksheet
+    Dim wsPdu As Worksheet
+    Dim loS2V As ListObject
+    Dim loVC As ListObject
+    Dim loPDU As ListObject
+    Dim loADU As ListObject
+    Dim arr As Variant
+    Dim r As Long
+    Dim c As Long
+    Dim lastCol As Long
+    Dim vendorNum As Long
+    Dim pduKey As String
+    Dim txMean As Double
+    Dim txSigma As Double
+    Dim nSch As Long
+    Dim pduLen As Long
+
+    On Error Resume Next
+    Set wsCfg = ThisWorkbook.Sheets("Exp Config & Data Proc Params")
+    Set wsPdu = ThisWorkbook.Sheets("PDU Size Table")
+    On Error GoTo 0
+    If wsCfg Is Nothing Then Exit Sub
+
+    ' StationID2VendorID -> dictS2V: key=StationID string, value=VendorID string
+    On Error Resume Next
+    Set loS2V = wsCfg.ListObjects("StationID2VendorID")
+    On Error GoTo 0
+    If Not loS2V Is Nothing Then
+        If Not loS2V.DataBodyRange Is Nothing Then
+            arr = loS2V.DataBodyRange.Value
+            For r = 1 To UBound(arr, 1)
+                If Trim$(CStr(arr(r, 1))) <> "" Then
+                    dictS2V(Trim$(CStr(arr(r, 1)))) = Trim$(CStr(arr(r, 2)))
+                End If
+            Next r
+        End If
+    End If
+
+    ' VendorID2TXTproc -> dictVC: key=VendorID string, value=Array(mean, sigma)
+    On Error Resume Next
+    Set loVC = wsCfg.ListObjects("VendorID2TXTproc")
+    On Error GoTo 0
+    If Not loVC Is Nothing Then
+        If Not loVC.DataBodyRange Is Nothing Then
+            arr = loVC.DataBodyRange.Value
+            For r = 1 To UBound(arr, 1)
+                If Trim$(CStr(arr(r, 1))) <> "" Then
+                    txMean = 0#
+                    txSigma = 0#
+                    If IsNumeric(arr(r, 2)) Then txMean = CDbl(arr(r, 2))
+                    If IsNumeric(arr(r, 3)) Then txSigma = CDbl(arr(r, 3))
+                    dictVC(Trim$(CStr(arr(r, 1)))) = Array(txMean, txSigma)
+                End If
+            Next r
+        End If
+    End If
+
+    ' PDU2RXTprocVendorID -> dictP2R, dictP2Sigma
+    ' col1=PDUsize; pairs from col2 onward: (mean,sigma) per vendor, vendorID = colPair index starting at 1
+    On Error Resume Next
+    Set loPDU = wsCfg.ListObjects("PDU2RXTprocVendorID")
+    On Error GoTo 0
+    If Not loPDU Is Nothing Then
+        If Not loPDU.DataBodyRange Is Nothing Then
+            lastCol = loPDU.ListColumns.Count
+            arr = loPDU.DataBodyRange.Value
+            For r = 1 To UBound(arr, 1)
+                For c = 2 To lastCol - 1 Step 2
+                    vendorNum = c \ 2
+                    pduKey = CStr(arr(r, 1)) & "|" & CStr(vendorNum)
+                    If IsNumeric(arr(r, c)) Then dictP2R(pduKey) = CDbl(arr(r, c))
+                    If IsNumeric(arr(r, c + 1)) Then dictP2Sigma(pduKey) = CDbl(arr(r, c + 1))
+                Next c
+            Next r
+        End If
+    End If
+
+    ' ADU2NumSubchansTable -> dictA2P: key=LEN string, value=Array(NumSubchans, PDU_Length)
+    If Not wsPdu Is Nothing Then
+        On Error Resume Next
+        Set loADU = wsPdu.ListObjects("ADU2NumSubchansTable")
+        On Error GoTo 0
+        If Not loADU Is Nothing Then
+            If Not loADU.DataBodyRange Is Nothing Then
+                arr = loADU.DataBodyRange.Value
+                For r = 1 To UBound(arr, 1)
+                    If Trim$(CStr(arr(r, 1))) <> "" Then
+                        nSch = 0
+                        pduLen = 0
+                        If IsNumeric(arr(r, 2)) Then nSch = CLng(arr(r, 2))
+                        If IsNumeric(arr(r, 3)) Then pduLen = CLng(arr(r, 3))
+                        dictA2P(Trim$(CStr(arr(r, 1)))) = Array(nSch, pduLen)
+                    End If
+                Next r
+            End If
+        End If
+    End If
 End Sub
