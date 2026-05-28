@@ -451,18 +451,23 @@ runTX_SFN_CR = (crChoice <> vbNo)
 
     Dim targetR As Long
     Dim txParamsChanged As Boolean
-    Dim txLoopChanged As Boolean
+    Dim txtProcMeanChanged As Boolean
     Dim continueLoop As Boolean
     Dim linRegCompleted As Boolean
     Dim linRegNeedsRerun As Boolean
     Dim currentTX As String
     Dim prelimRendered As Boolean
+    Dim anyParameterChanged As Boolean
+    Dim finalParamSyncNeeded As Boolean
+    Dim initialLoadPass As Boolean
 
     continueLoop = True
     prelimRendered = False
+    initialLoadPass = True
+    anyParameterChanged = False
 
     Do While continueLoop
-        txLoopChanged = False
+        txtProcMeanChanged = False
         linRegNeedsRerun = False
 
         ' -------------------------------
@@ -470,10 +475,13 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ' -------------------------------
         Set sfnMap = CreateObject("Scripting.Dictionary")
         For targetR = 1 To filteredCount
-            GetSingleRowWLSCost targetR, 0
-            ProcessInitialEstimation targetR
+            If initialLoadPass Then
+                GetSingleRowWLSCost targetR, 0
+            End If
+            Estimate_TX_SFN targetR
             AddToMap targetR, CLng(data(targetR, idxSFNCol))
         Next targetR
+        initialLoadPass = False
 
         ' ------------------------------------------------
         ' 2) PRELIMINARY RX/TX LATENCY OUTPUT FIRST
@@ -495,9 +503,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ' Keep your existing preliminary plot/table rendering code HERE
         ' exactly as it already is, but do NOT call LinReg yet.
         ' ============================================================
-    
-     
-    
+
+
+
     On Error Resume Next
     Set wsLogSheet = ThisWorkbook.Sheets("TX_SFN est Log")
     If wsLogSheet Is Nothing Then
@@ -505,11 +513,11 @@ runTX_SFN_CR = (crChoice <> vbNo)
         wsLogSheet.Name = "TX_SFN est Log"
     End If
     On Error GoTo 0
-    
+
     Dim oldCht As ChartObject
     Dim pduKeys As Variant
     pduKeys = uniquePduSizes.Keys
-    
+
     Dim pduIdx As Long
     Dim runningRowPos As Long
     Dim vendorKeys As Variant
@@ -521,25 +529,22 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Dim loTxTable As ListObject
     Dim loRxTable As ListObject
     Dim parameterChanged As Boolean
-    Dim anyParameterChanged As Boolean
     Dim rowWalk As Long
     Dim currentFilterPdu As Long
-    
+
     Set loTxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("VendorID2TXTproc")
     Set loRxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("PDU2RXTprocVendorID")
-    
+
     vendorKeys = uniqueVendors.Keys
     SortVariantLongArray pduKeys
     SortVariantStringArray vendorKeys
-    
-    anyParameterChanged = False
-    
-    Do
+
+
         wsLogSheet.Cells.Clear
         For Each oldCht In wsLogSheet.ChartObjects
             oldCht.Delete
         Next oldCht
-        
+
         If anyParameterChanged Then
             wsLogSheet.Range("A1").Value = "PRE-WLS REPLOTTED LATENCY DISTRIBUTIONS (Updated Parameter Profiles)"
         Else
@@ -547,48 +552,58 @@ runTX_SFN_CR = (crChoice <> vbNo)
         End If
         wsLogSheet.Range("A1").Font.Bold = True
         wsLogSheet.Range("A1").Font.Size = 14
-        
+
         runningRowPos = 4
         finalChartRowBottom = runningRowPos + 4
-        
+
         For vendorIdx = LBound(vendorKeys) To UBound(vendorKeys)
             If Trim$(CStr(vendorKeys(vendorIdx))) <> "" Then
                 runningRowPos = RenderVendorPreWlsSection(wsLogSheet, data, rxDataColIdx, idxSFNCol, idxTXQ, idxTXID, idxLEN, _
                                                           dictS2V, Trim$(CStr(vendorKeys(vendorIdx))), pduKeys, runningRowPos)
             End If
         Next vendorIdx
-        
+
         For Each oldCht In wsLogSheet.ChartObjects
             candidateRow = oldCht.BottomRightCell.Row + 2
             If candidateRow > finalChartRowBottom Then finalChartRowBottom = candidateRow
         Next oldCht
         If runningRowPos + 2 > finalChartRowBottom Then finalChartRowBottom = runningRowPos + 2
-        
+
         wsLogSheet.Activate
         wsLogSheet.Range("A1").Select
-        
+
         On Error Resume Next
         ActiveWindow.ScrollRow = 1
         ActiveWindow.ScrollColumn = 1
         On Error GoTo 0
-        
+
         Application.ScreenUpdating = True
         DoEvents
         DoEvents
-        
+
         renderWait = Timer + 1#
         Do While Timer < renderWait
             DoEvents
         Loop
-        
+
+        mod_16_LinRegTXQTvsTX_SFN_est.data = data
+        mod_16_LinRegTXQTvsTX_SFN_est.filteredCount = filteredCount
+        mod_16_LinRegTXQTvsTX_SFN_est.idxTXID = idxTXID
+        mod_16_LinRegTXQTvsTX_SFN_est.idxTXQ = idxTXQ
+        mod_16_LinRegTXQTvsTX_SFN_est.idxSFNCol = idxSFNCol
+        Set mod_16_LinRegTXQTvsTX_SFN_est.dictS2V = dictS2V
+        Set mod_16_LinRegTXQTvsTX_SFN_est.dictVC = dictVC
+        mod_16_LinRegTXQTvsTX_SFN_est.LinReg_TXTIMEvsTX_SFN_est
+
         parameterChanged = False
-        
+        txtProcMeanChanged = False
+
         For Each vKey In uniqueVendors.Keys
             If Trim$(CStr(vKey)) <> "" Then
                 If dictVC.Exists(CStr(vKey)) Then
                     Dim currentTxVals As Variant
                     currentTxVals = dictVC(CStr(vKey))
-                    
+
                     Dim txPromptMsg As String
                     txPromptMsg = "Review plots rendered on the active 'TX_SFN est Log' sheet background." & vbCrLf & vbCrLf & _
                                   "Current TX parameters for Vendor " & vKey & ":" & vbCrLf & _
@@ -596,10 +611,10 @@ runTX_SFN_CR = (crChoice <> vbNo)
                                   "Sigma: " & currentTxVals(1) & " ms" & vbCrLf & vbCrLf & _
                                   "To update, enter new values separated by a comma (e.g., 4.2,0.85)." & vbCrLf & _
                                   "Press Cancel or leave blank to retain values."
-                    
+
                     Dim txUserResponse As String
                     txUserResponse = InputBox(txPromptMsg, "TX Parameter Modification - Vendor " & vKey, currentTxVals(0) & "," & currentTxVals(1))
-                    
+
                     If Trim$(txUserResponse) <> "" And txUserResponse <> (currentTxVals(0) & "," & currentTxVals(1)) Then
                         Dim txSplit() As String
                         txSplit = Split(txUserResponse, ",")
@@ -607,13 +622,17 @@ runTX_SFN_CR = (crChoice <> vbNo)
                             If IsNumeric(Trim$(txSplit(0))) And IsNumeric(Trim$(txSplit(1))) Then
                                 Dim newTxMean As Double
                                 Dim newTxSigma As Double
+                                Dim oldTxMean As Double
                                 newTxMean = CDbl(Trim$(txSplit(0)))
                                 newTxSigma = CDbl(Trim$(txSplit(1)))
-                                
+                                oldTxMean = CDbl(currentTxVals(0))
+
                                 dictVC(CStr(vKey)) = Array(newTxMean, newTxSigma)
                                 parameterChanged = True
                                 anyParameterChanged = True
-                                
+                                finalParamSyncNeeded = True
+                                If newTxMean <> oldTxMean Then txtProcMeanChanged = True
+
                                 For rowWalk = 1 To loTxTable.ListRows.count
                                     If Trim$(CStr(loTxTable.DataBodyRange.Cells(rowWalk, 1).Value)) = CStr(vKey) Then
                                         loTxTable.DataBodyRange.Cells(rowWalk, 2).Value = newTxMean
@@ -627,20 +646,20 @@ runTX_SFN_CR = (crChoice <> vbNo)
                 End If
             End If
         Next vKey
-        
+
         For pduIdx = 0 To UBound(pduKeys)
             currentFilterPdu = CLng(pduKeys(pduIdx))
             For Each vKey In uniqueVendors.Keys
                 If Trim$(CStr(vKey)) <> "" Then
                     Dim rKey As String
                     rKey = currentFilterPdu & "|" & vKey
-                    
+
                     If dictP2R.Exists(rKey) Then
                         Dim currRxMean As Double
                         Dim currRxSig As Double
                         currRxMean = dictP2R(rKey)
                         currRxSig = IIf(dictP2Sigma.Exists(rKey), dictP2Sigma(rKey), 0#)
-                        
+
                         Dim rxPromptMsg As String
                         rxPromptMsg = "Review plots rendered on the active 'TX_SFN est Log' sheet background." & vbCrLf & vbCrLf & _
                                       "Current RX parameters for PDU " & currentFilterPdu & "B (Vendor " & vKey & "):" & vbCrLf & _
@@ -648,10 +667,10 @@ runTX_SFN_CR = (crChoice <> vbNo)
                                       "Sigma: " & currRxSig & " ms" & vbCrLf & vbCrLf & _
                                       "To update, enter new values separated by a comma (e.g., 3.1,0.45)." & vbCrLf & _
                                       "Press Cancel or leave blank to retain values."
-                        
+
                         Dim rxUserResponse As String
                         rxUserResponse = InputBox(rxPromptMsg, "RX Parameter Modification - PDU: " & currentFilterPdu & "B, Vendor: " & vKey, currRxMean & "," & currRxSig)
-                        
+
                         If Trim$(rxUserResponse) <> "" And rxUserResponse <> (currRxMean & "," & currRxSig) Then
                             Dim rxSplit() As String
                             rxSplit = Split(rxUserResponse, ",")
@@ -661,17 +680,18 @@ runTX_SFN_CR = (crChoice <> vbNo)
                                     Dim newRxSigma As Double
                                     newRxMean = CDbl(Trim$(rxSplit(0)))
                                     newRxSigma = CDbl(Trim$(rxSplit(1)))
-                                    
+
                                     dictP2R(rKey) = newRxMean
                                     dictP2Sigma(rKey) = newRxSigma
                                     parameterChanged = True
                                     anyParameterChanged = True
-                                    
+                                    finalParamSyncNeeded = True
+
                                     Dim targetMatrixColTime As Long
                                     Dim targetMatrixColSig As Long
                                     targetMatrixColTime = (CLng(vKey) * 2)
                                     targetMatrixColSig = targetMatrixColTime + 1
-                                    
+
                                     For rowWalk = 1 To loRxTable.ListRows.count
                                         If CLng(loRxTable.DataBodyRange.Cells(rowWalk, 1).Value) = currentFilterPdu Then
                                             loRxTable.DataBodyRange.Cells(rowWalk, targetMatrixColTime).Value = newRxMean
@@ -686,26 +706,29 @@ runTX_SFN_CR = (crChoice <> vbNo)
                 End If
             Next vKey
         Next pduIdx
-        
-        If parameterChanged Then
-            Application.ScreenUpdating = False
-            Set sfnMap = CreateObject("Scripting.Dictionary")
-            For targetR = 1 To filteredCount
-                GetSingleRowWLSCost targetR, 0
-                ProcessInitialEstimation targetR
-                AddToMap targetR, CLng(data(targetR, idxSFNCol))
-            Next targetR
+
+        If txtProcMeanChanged Then
+            continueLoop = True
+        Else
+            continueLoop = False
         End If
-        
-    Loop While parameterChanged
-    
+
+    Loop
+
+    If finalParamSyncNeeded Then
+        SyncParamTablesFromCurrentDicts loTxTable, loRxTable
+    End If
+
+    LocalSlidingWindowSortByTXSFN data, idxSFNCol, 10
+    RebuildSFNMapFromData filteredCount
+
     totalProcTime = MicroTimer() - startTime
-    
-    
+
+
     For r = 1 To filteredCount
         Dim rxC As Long
         rxC = 0
-        
+
         For i = 1 To activeRxCount
             If IsNumeric(data(r, rxDataColIdx(i))) Then
                 If CDbl(data(r, rxDataColIdx(i))) <> 0 Then
@@ -713,7 +736,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
                 End If
             End If
         Next i
-        
+
         data(r, idxRxCnt) = rxC
     Next r
     
@@ -835,12 +858,168 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Else
         summaryMsg = summaryMsg & "(No downstream analysis modules selected)" & vbCrLf
     End If
-    
+
     summaryMsg = summaryMsg & "---------------------------------------" & vbCrLf & _
                  "Total Analytics Pipeline Time: " & Format(pipelineTime, "0.000") & " seconds"
-                 
+
     MsgBox summaryMsg, vbInformation, "Pipeline Performance Monitor"
 End Sub
+
+Private Sub Estimate_TX_SFN(ByVal targetR As Long)
+    Dim txqVal As Variant
+    Dim txIDKey As String
+    Dim vendorKey As String
+    Dim txParams As Variant
+    Dim txtProcMean As Double
+
+    If targetR < 1 Or targetR > UBound(data, 1) Then Exit Sub
+    If idxTXQ <= 0 Or idxTXID <= 0 Or idxSFNCol <= 0 Then Exit Sub
+
+    txqVal = data(targetR, idxTXQ)
+    If Not IsNumeric(txqVal) Then Exit Sub
+
+    txIDKey = Trim$(CStr(data(targetR, idxTXID)))
+    If txIDKey = "" Then Exit Sub
+
+    vendorKey = vbNullString
+    If dictS2V.Exists(txIDKey) Then
+        vendorKey = CStr(dictS2V(txIDKey))
+    ElseIf dictS2V.Exists(UCase$(txIDKey)) Then
+        vendorKey = CStr(dictS2V(UCase$(txIDKey)))
+    End If
+    If vendorKey = vbNullString Then Exit Sub
+    If Not dictVC.Exists(vendorKey) Then Exit Sub
+
+    txParams = dictVC(vendorKey)
+    txtProcMean = CDbl(txParams(0))
+    data(targetR, idxSFNCol) = Round(CDbl(txqVal) + txtProcMean, 0)
+End Sub
+
+Private Sub RebuildSFNMapFromData(ByVal rowCount As Long)
+    Dim r As Long
+
+    Set sfnMap = CreateObject("Scripting.Dictionary")
+    For r = 1 To rowCount
+        If IsNumeric(data(r, idxSFNCol)) Then
+            AddToMap r, CLng(data(r, idxSFNCol))
+        End If
+    Next r
+End Sub
+
+Private Sub SyncParamTablesFromCurrentDicts(ByVal loTxTable As ListObject, ByVal loRxTable As ListObject)
+    Dim rowWalk As Long
+    Dim vKey As Variant
+    Dim pduKey As Variant
+    Dim splitParts() As String
+    Dim matrixRow As Long
+    Dim targetMatrixColTime As Long
+    Dim targetMatrixColSig As Long
+    Dim txVals As Variant
+
+    For Each vKey In dictVC.Keys
+        txVals = dictVC(CStr(vKey))
+        For rowWalk = 1 To loTxTable.ListRows.count
+            If Trim$(CStr(loTxTable.DataBodyRange.Cells(rowWalk, 1).Value)) = CStr(vKey) Then
+                loTxTable.DataBodyRange.Cells(rowWalk, 2).Value = CDbl(txVals(0))
+                loTxTable.DataBodyRange.Cells(rowWalk, 3).Value = CDbl(txVals(1))
+                Exit For
+            End If
+        Next rowWalk
+    Next vKey
+
+    For Each pduKey In dictP2R.Keys
+        splitParts = Split(CStr(pduKey), "|")
+        If UBound(splitParts) = 1 Then
+            targetMatrixColTime = (CLng(splitParts(1)) * 2)
+            targetMatrixColSig = targetMatrixColTime + 1
+
+            For matrixRow = 1 To loRxTable.ListRows.count
+                If CLng(loRxTable.DataBodyRange.Cells(matrixRow, 1).Value) = CLng(splitParts(0)) Then
+                    loRxTable.DataBodyRange.Cells(matrixRow, targetMatrixColTime).Value = dictP2R(CStr(pduKey))
+                    If dictP2Sigma.Exists(CStr(pduKey)) Then
+                        loRxTable.DataBodyRange.Cells(matrixRow, targetMatrixColSig).Value = dictP2Sigma(CStr(pduKey))
+                    End If
+                    Exit For
+                End If
+            Next matrixRow
+        End If
+    Next pduKey
+End Sub
+
+Private Sub LocalSlidingWindowSortByTXSFN(ByRef dataBlock As Variant, ByVal sortCol As Long, ByVal maxSpan As Double)
+    Dim nRows As Long
+    Dim nCols As Long
+    Dim sortedData As Variant
+    Dim bufRows() As Long
+    Dim bufVals() As Double
+    Dim bufCount As Long
+    Dim outRow As Long
+    Dim r As Long
+    Dim insertPos As Long
+    Dim rowKey As Double
+    Dim j As Long
+
+    If IsEmpty(dataBlock) Then Exit Sub
+    nRows = UBound(dataBlock, 1)
+    If nRows <= 1 Then Exit Sub
+    nCols = UBound(dataBlock, 2)
+
+    ReDim sortedData(1 To nRows, 1 To nCols)
+    ReDim bufRows(1 To 64)
+    ReDim bufVals(1 To 64)
+
+    bufCount = 0
+    outRow = 0
+
+    For r = 1 To nRows
+        rowKey = SortKeyAsDouble(dataBlock(r, sortCol))
+
+        bufCount = bufCount + 1
+        If bufCount > UBound(bufRows) Then
+            ReDim Preserve bufRows(1 To UBound(bufRows) * 2)
+            ReDim Preserve bufVals(1 To UBound(bufVals) * 2)
+        End If
+
+        insertPos = bufCount
+        Do While insertPos > 1 And rowKey < bufVals(insertPos - 1)
+            bufRows(insertPos) = bufRows(insertPos - 1)
+            bufVals(insertPos) = bufVals(insertPos - 1)
+            insertPos = insertPos - 1
+        Loop
+        bufRows(insertPos) = r
+        bufVals(insertPos) = rowKey
+
+        Do While bufCount > 1 And (bufVals(bufCount) - bufVals(1)) > maxSpan
+            outRow = outRow + 1
+            For j = 1 To nCols
+                sortedData(outRow, j) = dataBlock(bufRows(1), j)
+            Next j
+
+            For j = 1 To bufCount - 1
+                bufRows(j) = bufRows(j + 1)
+                bufVals(j) = bufVals(j + 1)
+            Next j
+            bufCount = bufCount - 1
+        Loop
+    Next r
+
+    For r = 1 To bufCount
+        outRow = outRow + 1
+        For j = 1 To nCols
+            sortedData(outRow, j) = dataBlock(bufRows(r), j)
+        Next j
+    Next r
+
+    dataBlock = sortedData
+End Sub
+
+Private Function SortKeyAsDouble(ByVal keyVal As Variant) As Double
+    If IsNumeric(keyVal) Then
+        SortKeyAsDouble = CDbl(keyVal)
+    Else
+        SortKeyAsDouble = 9.9E+307
+    End If
+End Function
 
 Private Function RenderVendorPreWlsSection(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, pduKeys As Variant, startRowPos As Long) As Long
     vendorID = Trim$(CStr(vendorID))
