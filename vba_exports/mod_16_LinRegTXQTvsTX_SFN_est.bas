@@ -22,7 +22,7 @@ Public idxSFNCol As Long
 Public dictS2V As Object
 Public dictVC As Object
 
-Public Sub Run_LinReg_TXQTIMEvsTX_SFN_est()
+Public Sub Run_LinReg_TXQTIMEvsTX_SFN_est(Optional ByRef rerunInitialEstimation As Boolean = False)
     Dim wsSrc As Worksheet
     Dim lo As ListObject
     Dim srcData As Variant
@@ -52,10 +52,10 @@ Public Sub Run_LinReg_TXQTIMEvsTX_SFN_est()
     idxTXQ = 2
     idxSFNCol = 3
 
-    LinReg_TXTIMEvsTX_SFN_est
+    LinReg_TXTIMEvsTX_SFN_est rerunInitialEstimation
 End Sub
 
-Public Sub LinReg_TXTIMEvsTX_SFN_est()
+Public Sub LinReg_TXTIMEvsTX_SFN_est(Optional ByRef rerunInitialEstimation As Boolean = False)
     Dim wsOut As Worksheet
     Dim vendorDict As Object
     Dim vendorKeys As Variant
@@ -97,6 +97,8 @@ Public Sub LinReg_TXTIMEvsTX_SFN_est()
         ProcessVendorSection wsOut, CStr(vendorKeys(vendorCount)), vendorCount - LBound(vendorKeys)
     Next vendorCount
     Application.ScreenUpdating = True
+
+    PromptAndPersistVendorTXParams vendorKeys, rerunInitialEstimation
 End Sub
 
 Private Sub ClearPreviousRegressionOutput(ByVal ws As Worksheet)
@@ -190,6 +192,73 @@ Private Sub ProcessVendorSection( _
     DrawResidualHistogram ws, histLeft, chartTop, 420#, 250#, resid, n, muRes, sigmaRes, vendorID
     WriteRegressionTableAtCell ws, "Q5", vendorID, n, slope, intercept, stdSlope, stdIntercept, rss
     WriteResidualStatsTableAtCell ws, "Q14", vendorID, n, muRes, sigmaRes
+End Sub
+
+Private Sub PromptAndPersistVendorTXParams(ByRef vendorKeys As Variant, ByRef rerunInitialEstimation As Boolean)
+    Dim loTxTable As ListObject
+    Dim vIdx As Long
+    Dim vendorID As String
+    Dim currentMean As Double
+    Dim currentSigma As Double
+    Dim rowWalk As Long
+    Dim promptMsg As String
+    Dim userResponse As String
+    Dim splitVals() As String
+    Dim newMean As Double
+    Dim newSigma As Double
+
+    On Error Resume Next
+    Set loTxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("VendorID2TXTproc")
+    On Error GoTo 0
+    If loTxTable Is Nothing Then Exit Sub
+
+    For vIdx = LBound(vendorKeys) To UBound(vendorKeys)
+        vendorID = Trim$(CStr(vendorKeys(vIdx)))
+        If vendorID = "" Then GoTo NextVendorPrompt
+
+        currentMean = 0#
+        currentSigma = 0#
+        For rowWalk = 1 To loTxTable.ListRows.Count
+            If Trim$(CStr(loTxTable.DataBodyRange.Cells(rowWalk, 1).Value)) = vendorID Then
+                If IsNumeric(loTxTable.DataBodyRange.Cells(rowWalk, 2).Value) Then
+                    currentMean = CDbl(loTxTable.DataBodyRange.Cells(rowWalk, 2).Value)
+                End If
+                If IsNumeric(loTxTable.DataBodyRange.Cells(rowWalk, 3).Value) Then
+                    currentSigma = CDbl(loTxTable.DataBodyRange.Cells(rowWalk, 3).Value)
+                End If
+                Exit For
+            End If
+        Next rowWalk
+
+        promptMsg = "LinReg results are rendered for Vendor " & vendorID & "." & vbCrLf & vbCrLf & _
+                    "Current TX parameters for Vendor " & vendorID & ":" & vbCrLf & _
+                    "  Tproc Mean : " & currentMean & " ms" & vbCrLf & _
+                    "  Tproc Sigma: " & currentSigma & " ms" & vbCrLf & vbCrLf & _
+                    "Enter new Mean,Sigma to update (e.g., 4.2,0.85)." & vbCrLf & _
+                    "Press Cancel or leave blank to keep current values."
+
+        userResponse = InputBox(promptMsg, "TX Tproc Update - Vendor " & vendorID, currentMean & "," & currentSigma)
+
+        If Trim$(userResponse) <> "" And userResponse <> (currentMean & "," & currentSigma) Then
+            splitVals = Split(userResponse, ",")
+            If UBound(splitVals) = 1 Then
+                If IsNumeric(Trim$(splitVals(0))) And IsNumeric(Trim$(splitVals(1))) Then
+                    newMean = CDbl(Trim$(splitVals(0)))
+                    newSigma = CDbl(Trim$(splitVals(1)))
+                    For rowWalk = 1 To loTxTable.ListRows.Count
+                        If Trim$(CStr(loTxTable.DataBodyRange.Cells(rowWalk, 1).Value)) = vendorID Then
+                            loTxTable.DataBodyRange.Cells(rowWalk, 2).Value = newMean
+                            loTxTable.DataBodyRange.Cells(rowWalk, 3).Value = newSigma
+                            Exit For
+                        End If
+                    Next rowWalk
+                    rerunInitialEstimation = True
+                End If
+            End If
+        End If
+
+NextVendorPrompt:
+    Next vIdx
 End Sub
 
 Private Sub FitOLS( _
