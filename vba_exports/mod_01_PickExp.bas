@@ -1227,6 +1227,10 @@ Private Sub LoadDictionariesFromThisWorkbook()
     Dim lastCol As Long
     Dim vendorNum As Long
     Dim pduKey As String
+    Dim txMean As Double
+    Dim txSigma As Double
+    Dim nSch As Long
+    Dim pduLen As Long
 
     On Error Resume Next
     Set wsCfg = ThisWorkbook.Sheets("Exp Config & Data Proc Params")
@@ -1258,8 +1262,6 @@ Private Sub LoadDictionariesFromThisWorkbook()
             arr = loVC.DataBodyRange.Value
             For r = 1 To UBound(arr, 1)
                 If Trim$(CStr(arr(r, 1))) <> "" Then
-                    Dim txMean As Double
-                    Dim txSigma As Double
                     txMean = 0#
                     txSigma = 0#
                     If IsNumeric(arr(r, 2)) Then txMean = CDbl(arr(r, 2))
@@ -1300,8 +1302,6 @@ Private Sub LoadDictionariesFromThisWorkbook()
                 arr = loADU.DataBodyRange.Value
                 For r = 1 To UBound(arr, 1)
                     If Trim$(CStr(arr(r, 1))) <> "" Then
-                        Dim nSch As Long
-                        Dim pduLen As Long
                         nSch = 0
                         pduLen = 0
                         If IsNumeric(arr(r, 2)) Then nSch = CLng(arr(r, 2))

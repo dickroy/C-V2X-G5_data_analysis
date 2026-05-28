@@ -239,21 +239,29 @@ Private Sub PromptAndPersistVendorTXParams(ByRef vendorKeys As Variant, ByRef re
 
         userResponse = InputBox(promptMsg, "TX Tproc Update - Vendor " & vendorID, currentMean & "," & currentSigma)
 
-        If Trim$(userResponse) <> "" And userResponse <> (currentMean & "," & currentSigma) Then
+        If Trim$(userResponse) <> "" Then
             splitVals = Split(userResponse, ",")
             If UBound(splitVals) = 1 Then
                 If IsNumeric(Trim$(splitVals(0))) And IsNumeric(Trim$(splitVals(1))) Then
                     newMean = CDbl(Trim$(splitVals(0)))
                     newSigma = CDbl(Trim$(splitVals(1)))
-                    For rowWalk = 1 To loTxTable.ListRows.Count
-                        If Trim$(CStr(loTxTable.DataBodyRange.Cells(rowWalk, 1).Value)) = vendorID Then
-                            loTxTable.DataBodyRange.Cells(rowWalk, 2).Value = newMean
-                            loTxTable.DataBodyRange.Cells(rowWalk, 3).Value = newSigma
-                            Exit For
-                        End If
-                    Next rowWalk
-                    rerunInitialEstimation = True
+                    If newMean <> currentMean Or newSigma <> currentSigma Then
+                        For rowWalk = 1 To loTxTable.ListRows.Count
+                            If Trim$(CStr(loTxTable.DataBodyRange.Cells(rowWalk, 1).Value)) = vendorID Then
+                                loTxTable.DataBodyRange.Cells(rowWalk, 2).Value = newMean
+                                loTxTable.DataBodyRange.Cells(rowWalk, 3).Value = newSigma
+                                Exit For
+                            End If
+                        Next rowWalk
+                        rerunInitialEstimation = True
+                    End If
+                Else
+                    MsgBox "Invalid input for Vendor " & vendorID & ". Expected format: Mean,Sigma (e.g., 4.2,0.85). Values were not updated.", _
+                           vbExclamation, "TX Tproc Update"
                 End If
+            Else
+                MsgBox "Invalid input for Vendor " & vendorID & ". Expected exactly two values separated by a comma. Values were not updated.", _
+                       vbExclamation, "TX Tproc Update"
             End If
         End If
 
