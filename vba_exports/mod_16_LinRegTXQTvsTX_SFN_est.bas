@@ -62,6 +62,7 @@ Public Sub LinReg_TXTIMEvsTX_SFN_est()
     Dim i As Long
     Dim vendorCount As Long
     Dim txKey As String
+    Dim prevScreenUpdating As Boolean
 
     If IsEmpty(data) Then Exit Sub
     If filteredCount <= 0 Then Exit Sub
@@ -92,11 +93,14 @@ Public Sub LinReg_TXTIMEvsTX_SFN_est()
     vendorKeys = vendorDict.Keys
     SortVariantStringArray vendorKeys
 
-    Application.ScreenUpdating = False
+    prevScreenUpdating = Application.ScreenUpdating
+    Application.ScreenUpdating = True
     For vendorCount = LBound(vendorKeys) To UBound(vendorKeys)
         ProcessVendorSection wsOut, CStr(vendorKeys(vendorCount)), vendorCount - LBound(vendorKeys)
+        RefreshRegressionCharts wsOut
+        DoEvents
     Next vendorCount
-    Application.ScreenUpdating = True
+    Application.ScreenUpdating = prevScreenUpdating
 End Sub
 
 Private Sub ClearPreviousRegressionOutput(ByVal ws As Worksheet)
@@ -353,6 +357,15 @@ Private Sub DrawResidualHistogram( _
     End With
 End Sub
 
+Private Sub RefreshRegressionCharts(ByVal ws As Worksheet)
+    Dim co As ChartObject
+
+    ws.Calculate
+    For Each co In ws.ChartObjects
+        If co.Left >= ws.Columns("M").Left Then co.Chart.Refresh
+    Next co
+End Sub
+
 Private Sub WriteRegressionTableAtCell( _
     ByVal ws As Worksheet, _
     ByVal anchorCell As String, _
@@ -504,4 +517,3 @@ Private Sub SortVariantStringArray(ByRef arr As Variant)
         Next i
     Loop While changed
 End Sub
-
