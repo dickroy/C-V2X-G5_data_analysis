@@ -531,6 +531,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Dim parameterChanged As Boolean
     Dim rowWalk As Long
     Dim currentFilterPdu As Long
+    Dim renderPrevCalc As XlCalculation
+    Dim renderPrevScreenUpdating As Boolean
+    Dim renderPrevEnableEvents As Boolean
 
     Set loTxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("VendorID2TXTproc")
     Set loRxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("PDU2RXTprocVendorID")
@@ -577,9 +580,15 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ActiveWindow.ScrollColumn = 1
         On Error GoTo 0
 
+        renderPrevCalc = Application.Calculation
+        renderPrevScreenUpdating = Application.ScreenUpdating
+        renderPrevEnableEvents = Application.EnableEvents
+
         Application.Calculation = xlCalculationAutomatic
         Application.ScreenUpdating = True
+        Application.EnableEvents = True
         wsLogSheet.Calculate
+        Application.Calculate
         DoEvents
         DoEvents
 
@@ -588,8 +597,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
             DoEvents
         Loop
 
-        Application.Calculation = xlCalculationManual
-        Application.ScreenUpdating = False
+        Application.Calculation = renderPrevCalc
+        Application.ScreenUpdating = renderPrevScreenUpdating
+        Application.EnableEvents = renderPrevEnableEvents
 
         mod_16_LinRegTXQTvsTX_SFN_est.data = data
         mod_16_LinRegTXQTvsTX_SFN_est.filteredCount = filteredCount
@@ -1115,19 +1125,21 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
     Dim mapValChart As Variant
     Dim rawLenVal As String
     Dim mappedPduStr As String
+    Dim stationKey As String
     
     ReDim lats(1 To UBound(dataBlock, 1) * (UBound(rxCols) + 1))
     countVal = 0
     
     For n = 1 To UBound(rxCols)
-        If stToVenMap.Exists(CStr(n)) Then
-            If stToVenMap(CStr(n)) = vendorID Then
+        stationKey = CStr(rxStationIDs(n))
+        If stToVenMap.Exists(stationKey) Then
+            If stToVenMap(stationKey) = vendorID Then
                 For r = 1 To UBound(dataBlock, 1)
                     Dim includeRow As Boolean
                     includeRow = False
                     
                     If isTXBlock Then
-                        If CStr(dataBlock(r, txidIdx)) = CStr(n) Then
+                        If CStr(dataBlock(r, txidIdx)) = stationKey Then
                             includeRow = True
                         End If
                     Else
@@ -1406,19 +1418,21 @@ Private Sub WriteSingleLatencySummary(ws As Worksheet, dataBlock As Variant, rxC
     Dim mapValSummary As Variant
     Dim rawLenVal As String
     Dim mappedPduStr As String
+    Dim stationKey As String
 
     ReDim lats(1 To UBound(dataBlock, 1) * (UBound(rxCols) + 1))
     countVal = 0
 
     For n = 1 To UBound(rxCols)
-        If stToVenMap.Exists(CStr(n)) Then
-            If stToVenMap(CStr(n)) = vendorID Then
+        stationKey = CStr(rxStationIDs(n))
+        If stToVenMap.Exists(stationKey) Then
+            If stToVenMap(stationKey) = vendorID Then
                 For r = 1 To UBound(dataBlock, 1)
                     Dim includeRow As Boolean
                     includeRow = False
 
                     If isTXBlock Then
-                        If CStr(dataBlock(r, txidIdx)) = CStr(n) Then
+                        If CStr(dataBlock(r, txidIdx)) = stationKey Then
                             includeRow = True
                         End If
                     Else
