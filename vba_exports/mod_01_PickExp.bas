@@ -444,6 +444,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
     targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
     data = targetTable.DataBodyRange.Value
+    LoadFilteredSourceData targetTable, srcData, srcCols, filterTXDict, data
 
     ReDim nudgeLog(1 To 50000, 1 To 4)
     nudgeCount = 0
@@ -525,6 +526,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Dim finalChartRowBottom As Long
     Dim candidateRow As Long
     Dim renderWait As Double
+    Dim previewCalc As XlCalculation
+    Dim previewScreenUpdating As Boolean
+    Dim previewEvents As Boolean
     Dim vKey As Variant
     Dim loTxTable As ListObject
     Dim loRxTable As ListObject
@@ -577,9 +581,15 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ActiveWindow.ScrollColumn = 1
         On Error GoTo 0
 
+        previewCalc = Application.Calculation
+        previewScreenUpdating = Application.ScreenUpdating
+        previewEvents = Application.EnableEvents
+
         Application.Calculation = xlCalculationAutomatic
         Application.ScreenUpdating = True
+        Application.EnableEvents = True
         wsLogSheet.Calculate
+        Application.Calculate
         DoEvents
         DoEvents
 
@@ -588,8 +598,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
             DoEvents
         Loop
 
-        Application.Calculation = xlCalculationManual
-        Application.ScreenUpdating = False
+        Application.EnableEvents = previewEvents
+        Application.Calculation = previewCalc
+        Application.ScreenUpdating = previewScreenUpdating
 
         mod_16_LinRegTXQTvsTX_SFN_est.data = data
         mod_16_LinRegTXQTvsTX_SFN_est.filteredCount = filteredCount
@@ -968,6 +979,8 @@ Private Sub LocalSlidingWindowSortByTXSFN(ByRef dataBlock As Variant, ByVal sort
     nRows = UBound(dataBlock, 1)
     If nRows <= 1 Then Exit Sub
     nCols = UBound(dataBlock, 2)
+    If sortCol < 1 Or sortCol > nCols Then Exit Sub
+    If maxSpan < 0 Then maxSpan = 0
 
     ReDim sortedData(1 To nRows, 1 To nCols)
     ReDim bufRows(1 To 64)
@@ -1020,6 +1033,37 @@ Private Sub LocalSlidingWindowSortByTXSFN(ByRef dataBlock As Variant, ByVal sort
     Next r
 
     dataBlock = sortedData
+End Sub
+
+Private Sub LoadFilteredSourceData(ByVal targetTable As ListObject, ByVal sourceData As Variant, ByVal sourceColumns As Object, ByVal txFilter As Object, ByRef targetData As Variant)
+    Dim srcRow As Long
+    Dim destRow As Long
+    Dim colIdx As Long
+    Dim headerKey As String
+    Dim txIdSourceCol As Long
+
+    If targetTable Is Nothing Then Exit Sub
+    If txFilter Is Nothing Then Exit Sub
+    If sourceColumns Is Nothing Then Exit Sub
+    If IsEmpty(sourceData) Or IsEmpty(targetData) Then Exit Sub
+    If Not sourceColumns.Exists("TX_ID") Then Exit Sub
+
+    txIdSourceCol = CLng(sourceColumns("TX_ID"))
+    destRow = 0
+
+    For srcRow = 1 To UBound(sourceData, 1)
+        If txFilter.Exists(Trim$(CStr(sourceData(srcRow, txIdSourceCol)))) Then
+            destRow = destRow + 1
+            If destRow > UBound(targetData, 1) Then Exit For
+
+            For colIdx = 1 To targetTable.ListColumns.count
+                headerKey = UCase$(Trim$(CStr(targetTable.HeaderRowRange.Cells(1, colIdx).Value)))
+                If sourceColumns.Exists(headerKey) Then
+                    targetData(destRow, colIdx) = sourceData(srcRow, CLng(sourceColumns(headerKey)))
+                End If
+            Next colIdx
+        End If
+    Next srcRow
 End Sub
 
 Private Function SortKeyAsDouble(ByVal keyVal As Variant) As Double
