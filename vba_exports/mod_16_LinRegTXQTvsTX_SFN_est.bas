@@ -188,8 +188,10 @@ Private Sub ProcessVendorSection( _
     stdIntercept = Sqr(varIntercept)
 
     DrawResidualHistogram ws, histLeft, chartTop, 420#, 250#, resid, n, muRes, sigmaRes, vendorID
-    WriteRegressionTableAtCell ws, "Q5", vendorID, n, slope, intercept, stdSlope, stdIntercept, rss
-    WriteResidualStatsTableAtCell ws, "Q14", vendorID, n, muRes, sigmaRes
+    Dim tableRow As Long
+    tableRow = titleRow + 2
+    WriteRegressionTableAtCell ws, "Q" & tableRow, vendorID, n, slope, intercept, stdSlope, stdIntercept, rss
+    WriteResidualStatsTableAtCell ws, "Q" & (tableRow + 9), vendorID, n, muRes, sigmaRes
 End Sub
 
 Private Sub FitOLS( _
