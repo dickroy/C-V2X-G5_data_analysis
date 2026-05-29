@@ -444,6 +444,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
     targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
     data = targetTable.DataBodyRange.Value
+    PopulateFilteredSourceRows data, targetTable, srcData, srcCols, filterTXDict
 
     ReDim nudgeLog(1 To 50000, 1 To 4)
     nudgeCount = 0
@@ -524,7 +525,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Dim vendorIdx As Long
     Dim finalChartRowBottom As Long
     Dim candidateRow As Long
-    Dim renderWait As Double
     Dim vKey As Variant
     Dim loTxTable As ListObject
     Dim loRxTable As ListObject
@@ -577,19 +577,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ActiveWindow.ScrollColumn = 1
         On Error GoTo 0
 
-        Application.Calculation = xlCalculationAutomatic
-        Application.ScreenUpdating = True
-        wsLogSheet.Calculate
-        DoEvents
-        DoEvents
-
-        renderWait = Timer + 1#
-        Do While Timer < renderWait
-            DoEvents
-        Loop
-
-        Application.Calculation = xlCalculationManual
-        Application.ScreenUpdating = False
+        RefreshPreviewSheet wsLogSheet
 
         mod_16_LinRegTXQTvsTX_SFN_est.data = data
         mod_16_LinRegTXQTvsTX_SFN_est.filteredCount = filteredCount
@@ -791,6 +779,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
                                activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, _
                                txBitmap, bitmapLen, cwlsSeconds
     End If
+    RebuildSFNMapFromData filteredCount
 
    ' 7. FINAL CALCULATIONS & WRITEBACK
  Application.StatusBar = "Writing mapping calculations back to RAM..."
@@ -898,6 +887,62 @@ Private Sub Estimate_TX_SFN(ByVal targetR As Long)
     txParams = dictVC(vendorKey)
     txtProcMean = CDbl(txParams(0))
     data(targetR, idxSFNCol) = Round(CDbl(txqVal) + txtProcMean, 0)
+End Sub
+
+Private Sub PopulateFilteredSourceRows(ByRef targetData As Variant, ByVal targetTable As ListObject, ByVal srcData As Variant, ByVal srcCols As Object, ByVal filterTXDict As Object)
+    Dim targetColMap() As Long
+    Dim targetCol As Long
+    Dim srcRow As Long
+    Dim targetRow As Long
+    Dim targetColName As String
+    Dim txKey As String
+
+    If IsEmpty(targetData) Then Exit Sub
+
+    ReDim targetColMap(1 To targetTable.ListColumns.count)
+    For targetCol = 1 To targetTable.ListColumns.count
+        targetColName = UCase$(Trim$(targetTable.ListColumns(targetCol).Name))
+        If srcCols.Exists(targetColName) Then
+            targetColMap(targetCol) = CLng(srcCols(targetColName))
+        End If
+    Next targetCol
+
+    targetRow = 0
+    For srcRow = 1 To UBound(srcData, 1)
+        txKey = Trim$(CStr(srcData(srcRow, srcCols("TX_ID"))))
+        If filterTXDict.Exists(txKey) Then
+            targetRow = targetRow + 1
+            For targetCol = 1 To UBound(targetColMap)
+                If targetColMap(targetCol) > 0 Then
+                    targetData(targetRow, targetCol) = srcData(srcRow, targetColMap(targetCol))
+                End If
+            Next targetCol
+        End If
+    Next srcRow
+End Sub
+
+Private Sub RefreshPreviewSheet(ByVal wsLogSheet As Worksheet)
+    Dim prevPreviewCalc As XlCalculation
+    Dim prevPreviewScreenUpdating As Boolean
+    Dim renderUntil As Double
+
+    prevPreviewCalc = Application.Calculation
+    prevPreviewScreenUpdating = Application.ScreenUpdating
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    wsLogSheet.Calculate
+    Application.Calculate
+    DoEvents
+    DoEvents
+
+    renderUntil = Timer + 1#
+    Do While Timer < renderUntil
+        DoEvents
+    Loop
+
+    Application.Calculation = prevPreviewCalc
+    Application.ScreenUpdating = prevPreviewScreenUpdating
 End Sub
 
 Private Sub RebuildSFNMapFromData(ByVal rowCount As Long)
@@ -1115,22 +1160,35 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
     Dim mapValChart As Variant
     Dim rawLenVal As String
     Dim mappedPduStr As String
+    Dim stationKey As String
+    Dim rowTxKey As String
     
     ReDim lats(1 To UBound(dataBlock, 1) * (UBound(rxCols) + 1))
     countVal = 0
     
-    For n = 1 To UBound(rxCols)
-        If stToVenMap.Exists(CStr(n)) Then
-            If stToVenMap(CStr(n)) = vendorID Then
-                For r = 1 To UBound(dataBlock, 1)
-                    Dim includeRow As Boolean
-                    includeRow = False
-                    
-                    If isTXBlock Then
-                        If CStr(dataBlock(r, txidIdx)) = CStr(n) Then
-                            includeRow = True
+    If isTXBlock Then
+        For r = 1 To UBound(dataBlock, 1)
+            rowTxKey = UCase$(Trim$(CStr(dataBlock(r, txidIdx))))
+            If rowTxKey <> "" Then
+                If stToVenMap.Exists(rowTxKey) Then
+                    If StrComp(CStr(stToVenMap(rowTxKey)), vendorID, vbTextCompare) = 0 Then
+                        If IsNumeric(dataBlock(r, sfnIdx)) And IsNumeric(dataBlock(r, txqIdx)) Then
+                            val = CDbl(dataBlock(r, sfnIdx)) - CDbl(dataBlock(r, txqIdx))
+                            If val >= 0 Then
+                                countVal = countVal + 1
+                                lats(countVal) = val
+                            End If
                         End If
-                    Else
+                    End If
+                End If
+            End If
+        Next r
+    Else
+        For n = 1 To UBound(rxCols)
+            stationKey = UCase$(Trim$(CStr(rxStationIDs(n))))
+            If stToVenMap.Exists(stationKey) Then
+                If StrComp(CStr(stToVenMap(stationKey)), vendorID, vbTextCompare) = 0 Then
+                    For r = 1 To UBound(dataBlock, 1)
                         rawLenVal = Trim$(CStr(dataBlock(r, lenColIdx)))
                         
                         If dictA2P.Exists(rawLenVal) Then
@@ -1146,26 +1204,20 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
                         
                         If IsNumeric(mappedPduStr) Then
                             If CLng(mappedPduStr) = targetPduFilter Then
-                                includeRow = True
+                                If IsNumeric(dataBlock(r, rxCols(n))) And IsNumeric(dataBlock(r, sfnIdx)) Then
+                                    val = CDbl(dataBlock(r, rxCols(n))) - CDbl(dataBlock(r, sfnIdx))
+                                    If val >= 0 Then
+                                        countVal = countVal + 1
+                                        lats(countVal) = val
+                                    End If
+                                End If
                             End If
                         End If
-                    End If
-                    
-                    If includeRow Then
-                        If isTXBlock Then
-                            val = dataBlock(r, sfnIdx) - dataBlock(r, txqIdx)
-                        Else
-                            val = dataBlock(r, rxCols(n)) - dataBlock(r, sfnIdx)
-                        End If
-                        If val >= 0 Then
-                            countVal = countVal + 1
-                            lats(countVal) = val
-                        End If
-                    End If
-                Next r
+                    Next r
+                End If
             End If
-        End If
-    Next n
+        Next n
+    End If
     
     If countVal = 0 Then Exit Sub
     ReDim Preserve lats(1 To countVal)
@@ -1406,22 +1458,35 @@ Private Sub WriteSingleLatencySummary(ws As Worksheet, dataBlock As Variant, rxC
     Dim mapValSummary As Variant
     Dim rawLenVal As String
     Dim mappedPduStr As String
+    Dim stationKey As String
+    Dim rowTxKey As String
 
     ReDim lats(1 To UBound(dataBlock, 1) * (UBound(rxCols) + 1))
     countVal = 0
 
-    For n = 1 To UBound(rxCols)
-        If stToVenMap.Exists(CStr(n)) Then
-            If stToVenMap(CStr(n)) = vendorID Then
-                For r = 1 To UBound(dataBlock, 1)
-                    Dim includeRow As Boolean
-                    includeRow = False
-
-                    If isTXBlock Then
-                        If CStr(dataBlock(r, txidIdx)) = CStr(n) Then
-                            includeRow = True
+    If isTXBlock Then
+        For r = 1 To UBound(dataBlock, 1)
+            rowTxKey = UCase$(Trim$(CStr(dataBlock(r, txidIdx))))
+            If rowTxKey <> "" Then
+                If stToVenMap.Exists(rowTxKey) Then
+                    If StrComp(CStr(stToVenMap(rowTxKey)), vendorID, vbTextCompare) = 0 Then
+                        If IsNumeric(dataBlock(r, sfnIdx)) And IsNumeric(dataBlock(r, txqIdx)) Then
+                            val = CDbl(dataBlock(r, sfnIdx)) - CDbl(dataBlock(r, txqIdx))
+                            If val >= 0 Then
+                                countVal = countVal + 1
+                                lats(countVal) = val
+                            End If
                         End If
-                    Else
+                    End If
+                End If
+            End If
+        Next r
+    Else
+        For n = 1 To UBound(rxCols)
+            stationKey = UCase$(Trim$(CStr(rxStationIDs(n))))
+            If stToVenMap.Exists(stationKey) Then
+                If StrComp(CStr(stToVenMap(stationKey)), vendorID, vbTextCompare) = 0 Then
+                    For r = 1 To UBound(dataBlock, 1)
                         rawLenVal = Trim$(CStr(dataBlock(r, lenColIdx)))
                         If dictA2P.Exists(rawLenVal) Then
                             mapValSummary = dictA2P(rawLenVal)
@@ -1436,26 +1501,20 @@ Private Sub WriteSingleLatencySummary(ws As Worksheet, dataBlock As Variant, rxC
 
                         If IsNumeric(mappedPduStr) Then
                             If CLng(mappedPduStr) = targetPduFilter Then
-                                includeRow = True
+                                If IsNumeric(dataBlock(r, rxCols(n))) And IsNumeric(dataBlock(r, sfnIdx)) Then
+                                    val = CDbl(dataBlock(r, rxCols(n))) - CDbl(dataBlock(r, sfnIdx))
+                                    If val >= 0 Then
+                                        countVal = countVal + 1
+                                        lats(countVal) = val
+                                    End If
+                                End If
                             End If
                         End If
-                    End If
-
-                    If includeRow Then
-                        If isTXBlock Then
-                            val = dataBlock(r, sfnIdx) - dataBlock(r, txqIdx)
-                        Else
-                            val = dataBlock(r, rxCols(n)) - dataBlock(r, sfnIdx)
-                        End If
-                        If val >= 0 Then
-                            countVal = countVal + 1
-                            lats(countVal) = val
-                        End If
-                    End If
-                Next r
+                    Next r
+                End If
             End If
-        End If
-    Next n
+        Next n
+    End If
 
     If countVal = 0 Then Exit Sub
     ReDim Preserve lats(1 To countVal)
