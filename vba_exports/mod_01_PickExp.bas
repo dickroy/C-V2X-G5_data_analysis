@@ -447,6 +447,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     LoadFilteredSourceData targetTable, srcData, srcCols, filterTXDict, data
 
     ' Compute MSG_GEN_TIME from IVI_TIMESTAMP
+ 
     If srcCols.Exists("IVI_TIMESTAMP") And idxGen > 0 Then
         Dim genDestR As Long
         genDestR = 0
@@ -456,7 +457,8 @@ runTX_SFN_CR = (crChoice <> vbNo)
                 If genDestR > UBound(data, 1) Then Exit For
                 If IsNumeric(srcData(r, CLng(srcCols("IVI_TIMESTAMP")))) Then
                     iviVal = CDbl(srcData(r, CLng(srcCols("IVI_TIMESTAMP"))))
-                    genTime = iviVal - gnFirstTX + leapSecs
+                genTime = (DblMod(iviVal * 1000, gnPeriod) - gnFirstTX - leapSecs)
+                If genTime < 0 Then genTime = genTime + gnPeriod
                     data(genDestR, idxGen) = genTime
                 End If
             End If
