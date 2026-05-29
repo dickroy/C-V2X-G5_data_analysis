@@ -1072,13 +1072,9 @@ Private Sub LoadFilteredSourceData(ByVal targetTable As ListObject, ByVal source
             If hasIviTimestamp And idxGenCol > 0 And gnPeriod > 0# Then
                 If IsNumeric(sourceData(srcRow, iviTimestampCol)) Then
                     iviVal = CDbl(sourceData(srcRow, iviTimestampCol))
-                    genTime = (DblMod(iviVal * 1000#, gnPeriod) - gnFirstTX - leapSecs)
-                    Do While genTime < 0#
-                        genTime = genTime + gnPeriod
-                    Loop
-                    Do While genTime >= gnPeriod
-                        genTime = genTime - gnPeriod
-                    Loop
+                    genTime = DblMod(iviVal * 1000#, gnPeriod) - (gnFirstTX + leapSecs)
+                    genTime = DblMod(genTime, gnPeriod)
+                    If genTime < 0# Then genTime = genTime + gnPeriod
                     targetData(destRow, idxGenCol) = Round(genTime, 0)
                 End If
             End If
