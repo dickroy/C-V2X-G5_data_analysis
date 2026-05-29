@@ -32,6 +32,7 @@ Private idxRxCnt As Long
 Private idxAppID As Long
 Private txBitmap As String
 Private bitmapLen As Long
+Private Const RESIDUAL_CHART_RENDER_TIMEOUT_SEC As Double = 12#
 
 Private rxStationIDs() As Long
 Private rxDataColIdx() As Long
@@ -636,7 +637,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
             oldCht.Chart.Refresh
         Next oldCht
         DoEvents
-        Call WaitForResidualChartsRender(wsLogSheet, CountExpectedResidualCharts(vendorKeys), 12#)
+        Call WaitForResidualChartsRender(wsLogSheet, CountExpectedResidualCharts(vendorKeys), RESIDUAL_CHART_RENDER_TIMEOUT_SEC)
 
         parameterChanged = False
         txtProcMeanChanged = False
@@ -1828,7 +1829,7 @@ Private Function WaitForResidualChartsRender(ByVal ws As Worksheet, ByVal expect
                 On Error Resume Next
                 co.Chart.Refresh
                 If Err.Number = 0 Then
-                    If co.Chart.SeriesCollection.count >= 2 Then
+                    If co.Chart.SeriesCollection.Count >= 2 Then
                         If co.Chart.HasTitle Then
                             If Trim$(co.Chart.ChartTitle.Text) <> "" Then
                                 readyCount = readyCount + 1
