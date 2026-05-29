@@ -444,7 +444,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
     targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
     data = targetTable.DataBodyRange.Value
-    LoadFilteredSourceData targetTable, srcData, srcCols, filterTXDict, data
+    LoadFilteredSourceData targetTable, srcData, srcCols, filterTXDict, data, idxGen, gnPeriod, gnFirstTX, leapSecs
 
     ReDim nudgeLog(1 To 50000, 1 To 4)
     nudgeCount = 0
@@ -1035,12 +1035,16 @@ Private Sub LocalSlidingWindowSortByTXSFN(ByRef dataBlock As Variant, ByVal sort
     dataBlock = sortedData
 End Sub
 
-Private Sub LoadFilteredSourceData(ByVal targetTable As ListObject, ByVal sourceData As Variant, ByVal sourceColumns As Object, ByVal txFilter As Object, ByRef targetData As Variant)
+Private Sub LoadFilteredSourceData(ByVal targetTable As ListObject, ByVal sourceData As Variant, ByVal sourceColumns As Object, ByVal txFilter As Object, ByRef targetData As Variant, ByVal idxGenCol As Long, ByVal gnPeriod As Double, ByVal gnFirstTX As Double, ByVal leapSecs As Double)
     Dim srcRow As Long
     Dim destRow As Long
     Dim colIdx As Long
     Dim headerKey As String
     Dim txIdSourceCol As Long
+    Dim hasIviTimestamp As Boolean
+    Dim iviTimestampCol As Long
+    Dim iviVal As Double
+    Dim genTime As Double
 
     If targetTable Is Nothing Then Exit Sub
     If txFilter Is Nothing Then Exit Sub
@@ -1049,6 +1053,8 @@ Private Sub LoadFilteredSourceData(ByVal targetTable As ListObject, ByVal source
     If Not sourceColumns.Exists("TX_ID") Then Exit Sub
 
     txIdSourceCol = CLng(sourceColumns("TX_ID"))
+    hasIviTimestamp = sourceColumns.Exists("IVI_TIMESTAMP")
+    If hasIviTimestamp Then iviTimestampCol = CLng(sourceColumns("IVI_TIMESTAMP"))
     destRow = 0
 
     For srcRow = 1 To UBound(sourceData, 1)
@@ -1062,6 +1068,15 @@ Private Sub LoadFilteredSourceData(ByVal targetTable As ListObject, ByVal source
                     targetData(destRow, colIdx) = sourceData(srcRow, CLng(sourceColumns(headerKey)))
                 End If
             Next colIdx
+
+            If hasIviTimestamp And idxGenCol > 0 And gnPeriod <> 0# Then
+                If IsNumeric(sourceData(srcRow, iviTimestampCol)) Then
+                    iviVal = CDbl(sourceData(srcRow, iviTimestampCol))
+                    genTime = (DblMod(iviVal * 1000#, gnPeriod) - gnFirstTX - leapSecs)
+                    If genTime < 0# Then genTime = genTime + gnPeriod
+                    targetData(destRow, idxGenCol) = Round(genTime, 0)
+                End If
+            End If
         End If
     Next srcRow
 End Sub
