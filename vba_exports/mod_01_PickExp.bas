@@ -617,7 +617,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
             oldCht.Chart.Refresh
         Next oldCht
         DoEvents
-        DoEvents
 
         parameterChanged = False
         txtProcMeanChanged = False
