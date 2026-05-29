@@ -610,6 +610,14 @@ runTX_SFN_CR = (crChoice <> vbNo)
         Set mod_16_LinRegTXQTvsTX_SFN_est.dictS2V = dictS2V
         Set mod_16_LinRegTXQTvsTX_SFN_est.dictVC = dictVC
         mod_16_LinRegTXQTvsTX_SFN_est.LinReg_TXTIMEvsTX_SFN_est
+        Application.ScreenUpdating = True
+        wsLogSheet.Calculate
+        Application.Calculate
+        For Each oldCht In wsLogSheet.ChartObjects
+            oldCht.Chart.Refresh
+        Next oldCht
+        DoEvents
+        DoEvents
 
         parameterChanged = False
         txtProcMeanChanged = False
@@ -1060,6 +1068,8 @@ Private Sub LoadFilteredSourceData(ByVal targetTable As ListObject, ByVal source
                 headerKey = UCase$(Trim$(CStr(targetTable.HeaderRowRange.Cells(1, colIdx).Value)))
                 If sourceColumns.Exists(headerKey) Then
                     targetData(destRow, colIdx) = sourceData(srcRow, CLng(sourceColumns(headerKey)))
+                ElseIf headerKey = "APP_ID" And sourceColumns.Exists("IVI_ID") Then
+                    targetData(destRow, colIdx) = sourceData(srcRow, CLng(sourceColumns("IVI_ID")))
                 End If
             Next colIdx
         End If
