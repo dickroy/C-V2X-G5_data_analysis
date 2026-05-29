@@ -936,8 +936,8 @@ Private Sub RefreshPreviewSheet(ByVal wsLogSheet As Worksheet)
     DoEvents
     DoEvents
 
-    renderUntil = Timer + 1#
-    Do While Timer < renderUntil
+    renderUntil = MicroTimer() + 1#
+    Do While MicroTimer() < renderUntil
         DoEvents
     Loop
 
