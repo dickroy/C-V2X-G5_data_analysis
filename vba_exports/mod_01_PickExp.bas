@@ -273,7 +273,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
                     Do While CDbl(sortedTXKeys(i)) < CDbl(pvt)
                         i = i + 1
                     Loop
-
                     Do While CDbl(sortedTXKeys(r)) > CDbl(pvt)
                         r = r - 1
                     Loop
@@ -487,7 +486,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
     prelimRendered = False
     initialLoadPass = True
     anyParameterChanged = False
-    previewStateCaptured = False
 
     Do While continueLoop
         txtProcMeanChanged = False
@@ -551,7 +549,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Dim previewCalc As XlCalculation
     Dim previewScreenUpdating As Boolean
     Dim previewEvents As Boolean
-    Dim previewStateCaptured As Boolean
     Dim vKey As Variant
     Dim loTxTable As ListObject
     Dim loRxTable As ListObject
@@ -604,12 +601,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ActiveWindow.ScrollColumn = 1
         On Error GoTo 0
 
-        If Not previewStateCaptured Then
-            previewCalc = Application.Calculation
-            previewScreenUpdating = Application.ScreenUpdating
-            previewEvents = Application.EnableEvents
-            previewStateCaptured = True
-        End If
+        previewCalc = Application.Calculation
+        previewScreenUpdating = Application.ScreenUpdating
+        previewEvents = Application.EnableEvents
 
         Application.Calculation = xlCalculationAutomatic
         Application.ScreenUpdating = True
@@ -623,6 +617,10 @@ runTX_SFN_CR = (crChoice <> vbNo)
         Do While Timer < renderWait
             DoEvents
         Loop
+
+        Application.EnableEvents = previewEvents
+        Application.Calculation = previewCalc
+        Application.ScreenUpdating = previewScreenUpdating
 
         mod_16_LinRegTXQTvsTX_SFN_est.data = data
         mod_16_LinRegTXQTvsTX_SFN_est.filteredCount = filteredCount
@@ -640,9 +638,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
         Next oldCht
         DoEvents
         Call WaitForResidualChartsRender(wsLogSheet, CountExpectedResidualCharts(vendorKeys), RESIDUAL_CHART_RENDER_TIMEOUT_SEC)
-        wsLogSheet.Activate
-        Application.ScreenUpdating = True
-        DoEvents
 
         parameterChanged = False
         txtProcMeanChanged = False
@@ -764,12 +759,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
 
     Loop
 
-    If previewStateCaptured Then
-        Application.EnableEvents = previewEvents
-        Application.Calculation = previewCalc
-        Application.ScreenUpdating = previewScreenUpdating
-    End If
-
     If finalParamSyncNeeded Then
         SyncParamTablesFromCurrentDicts loTxTable, loRxTable
     End If
@@ -840,8 +829,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
                                idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, _
                                activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, _
                                txBitmap, bitmapLen, cwlsSeconds
-        LocalSlidingWindowSortByTXSFN data, idxSFNCol, 0
-        RebuildSFNMapFromData filteredCount
     End If
 
    ' 7. FINAL CALCULATIONS & WRITEBACK
