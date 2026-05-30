@@ -1,7 +1,8 @@
 Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-Private Const MODULE_VERSION_TXSFNCR As String = "V5.0.0-alpha12"
+' Version: V1.0.0
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.0"
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter_TXSFNCR Lib "kernel32" Alias "QueryPerformanceCounter" (ByRef lpPerformanceCount As Currency) As Long
@@ -283,12 +284,18 @@ End Sub
 
 Private Function ValidateInputMonotoneTXSFN() As Boolean
     Dim r As Long
+    Dim prevVal As Long
+    Dim curVal As Long
     ValidateInputMonotoneTXSFN = True
+    If mFilteredCount <= 1 Then Exit Function
+    prevVal = mInitialSFN(1)
     For r = 2 To mFilteredCount
-        If mInitialSFN(r) < mInitialSFN(r - 1) Then
+        curVal = mInitialSFN(r)
+        If curVal < prevVal Then
             ValidateInputMonotoneTXSFN = False
             Exit Function
         End If
+        prevVal = curVal
     Next r
 End Function
 
@@ -353,7 +360,7 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     mPoolMinSFN = mCurrentSFN(leftRow)
     mPoolMaxSFN = mCurrentSFN(rightRow)
     mPoolCenter = (mPoolMinSFN + mPoolMaxSFN) / 2#
-    mMaxObservedPoolSize = IIf(mPoolCount > mMaxObservedPoolSize, mPoolCount, mMaxObservedPoolSize)
+    If mPoolCount > mMaxObservedPoolSize Then mMaxObservedPoolSize = mPoolCount
     BuildPoolCests
 End Sub
 
@@ -383,35 +390,27 @@ Private Sub ResolveEntirePool()
     Dim rows() As Long
     Dim rowCount As Long
     If mPoolCestCount <= 0 Then Exit Sub
-    If mPoolCestCount = 1 Then
-        rowCount = mPoolCestEndRows(1) - mPoolCestStartRows(1) + 1
-        rows = ExtractPoolRows(mPoolCestStartRows(1), mPoolCestEndRows(1))
-        Call TryResolveCset(rows, rowCount, mPoolCestSFN(1))
-    ElseIf mPoolCestCount = 2 Then
-        rowCount = mPoolCestEndRows(1) - mPoolCestStartRows(1) + 1
-        rows = ExtractPoolRows(mPoolCestStartRows(1), mPoolCestEndRows(1))
-        Call TryResolveCset(rows, rowCount, mPoolCestSFN(1))
-        rowCount = mPoolCestEndRows(2) - mPoolCestStartRows(2) + 1
-        rows = ExtractPoolRows(mPoolCestStartRows(2), mPoolCestEndRows(2))
-        Call TryResolveCset(rows, rowCount, mPoolCestSFN(2))
-    Else
-        For cestIdx = 1 To mPoolCestCount
-            rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
-            rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
-            Call TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx))
-        Next cestIdx
-    End If
+    For cestIdx = 1 To mPoolCestCount
+        rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
+        rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
+        Call TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx))
+    Next cestIdx
 End Sub
 
 Private Function TryResolveCset(ByRef rows() As Long, ByVal rowCount As Long, ByVal sourceSFN As Long) As Boolean
     Dim analysis As TCsetAnalysis
     analysis = AnalyzeCsetSingleMoves(rows, rowCount)
-    TryResolveCset = (analysis.candidateCount > 0)
+    If analysis.candidateCount <= 0 Then
+        TryResolveCset = False
+        Exit Function
+    End If
+    TryResolveCset = TryPlaceOneMovedRow_NoSourceRetest(analysis.candidateRows, analysis.candidateCount, sourceSFN)
 End Function
 
 Private Function AnalyzeCsetSingleMoves(ByRef rows() As Long, ByVal rowCount As Long) As TCsetAnalysis
     Dim a As TCsetAnalysis
     Dim i As Long
+    a.MovesRequired = IIf(rowCount > 1, rowCount - 1, 0)
     a.candidateCount = rowCount
     ReDim a.candidateRows(1 To rowCount)
     For i = 1 To rowCount
@@ -421,10 +420,25 @@ Private Function AnalyzeCsetSingleMoves(ByRef rows() As Long, ByVal rowCount As 
 End Function
 
 Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Long, ByVal candidateCount As Long, ByVal sourceSFN As Long) As Boolean
-    TryPlaceOneMovedRow_NoSourceRetest = (candidateCount > 0)
+    Dim i As Long
+    Dim rowIdx As Long
+    For i = 1 To candidateCount
+        rowIdx = candidateRows(i)
+        If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, sourceSFN + 1) Then
+            mCurrentSFN(rowIdx) = sourceSFN + 1
+            mWritten(rowIdx) = True
+            TryPlaceOneMovedRow_NoSourceRetest = True
+            Exit Function
+        End If
+    Next i
+    TryPlaceOneMovedRow_NoSourceRetest = False
 End Function
 
 Private Function IsOneMovedRowPlacementLegal_NoSourceRetest(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean
+    If rowIdx < 1 Or rowIdx > mFilteredCount Then Exit Function
+    If testSFN < sourceSFN Then Exit Function
+    If Not IsMoveWithinRowBounds(rowIdx, testSFN) Then Exit Function
+    If Not IsBitmapSFNAllowed(testSFN) Then Exit Function
     IsOneMovedRowPlacementLegal_NoSourceRetest = True
 End Function
 
@@ -433,15 +447,23 @@ Private Function TryForwardEscapeMove_NoSourceRetest(ByVal sourceSFN As Long, By
 End Function
 
 Private Function ResolveTripleSplitDeterministic(ByRef rows() As Long, ByVal sourceSFN As Long) As Boolean
+    Dim i As Long
+    For i = LBound(rows) To UBound(rows)
+        If IsOneMovedRowPlacementLegal_NoSourceRetest(rows(i), sourceSFN, sourceSFN + 1) Then
+            mCurrentSFN(rows(i)) = sourceSFN + 1
+            ResolveTripleSplitDeterministic = True
+            Exit Function
+        End If
+    Next i
     ResolveTripleSplitDeterministic = False
 End Function
 
 Private Function IsPoolForcedSplitFirstMoveLegal(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean
-    IsPoolForcedSplitFirstMoveLegal = True
+    IsPoolForcedSplitFirstMoveLegal = IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN)
 End Function
 
 Private Function IsPoolSingleRowPlacementLegal(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean
-    IsPoolSingleRowPlacementLegal = True
+    IsPoolSingleRowPlacementLegal = IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN)
 End Function
 
 Private Function EvaluatePoolBucketExcludingRow(ByVal sfnVal As Long, ByVal excludeRowIdx As Long) As Boolean
