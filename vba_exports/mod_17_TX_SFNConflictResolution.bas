@@ -175,7 +175,6 @@ Public Sub TX_SFNConflictResolution( _
     End If
 
     PrepareRowDerivedData_V5
-    InitializeOutputBuffer_V5
 
     Do
         t0 = MicroTimer_TXSFNCR_V5()

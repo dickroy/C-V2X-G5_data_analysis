@@ -32,7 +32,6 @@ Private idxRxCnt As Long
 Private idxAppID As Long
 Private txBitmap As String
 Private bitmapLen As Long
-Private Const RESIDUAL_CHART_RENDER_TIMEOUT_SEC As Double = 12#
 
 Private rxStationIDs() As Long
 Private rxDataColIdx() As Long
@@ -637,7 +636,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
             oldCht.Chart.Refresh
         Next oldCht
         DoEvents
-        Call WaitForResidualChartsRender(wsLogSheet, CountExpectedResidualCharts(vendorKeys), RESIDUAL_CHART_RENDER_TIMEOUT_SEC)
 
         parameterChanged = False
         txtProcMeanChanged = False
@@ -1794,60 +1792,6 @@ Private Sub AddToMap(ByVal rowIdx As Long, ByVal sfnVal As Long)
     If Not sfnMap.Exists(sfnVal) Then Set sfnMap(sfnVal) = New Collection
     sfnMap(sfnVal).Add rowIdx
 End Sub
-
-Private Function CountExpectedResidualCharts(ByVal vendorKeys As Variant) As Long
-    Dim i As Long
-    Dim c As Long
-
-    If IsArray(vendorKeys) Then
-        For i = LBound(vendorKeys) To UBound(vendorKeys)
-            If Trim$(CStr(vendorKeys(i))) <> "" Then c = c + 1
-        Next i
-    End If
-
-    CountExpectedResidualCharts = c
-End Function
-
-Private Function WaitForResidualChartsRender(ByVal ws As Worksheet, ByVal expectedCharts As Long, Optional ByVal timeoutSeconds As Double = 10#) As Boolean
-    Dim startT As Double
-    Dim readyCount As Long
-    Dim co As ChartObject
-
-    If expectedCharts <= 0 Then
-        WaitForResidualChartsRender = True
-        Exit Function
-    End If
-
-    startT = MicroTimer()
-    Do
-        readyCount = 0
-        ws.Calculate
-        Application.Calculate
-
-        For Each co In ws.ChartObjects
-            If co.Left >= ws.Columns("M").Left Then
-                On Error Resume Next
-                co.Chart.Refresh
-                If Err.Number = 0 Then
-                    If co.Chart.SeriesCollection.Count >= 2 Then
-                        If co.Chart.HasTitle Then
-                            If Trim$(co.Chart.ChartTitle.Text) <> "" Then
-                                readyCount = readyCount + 1
-                            End If
-                        End If
-                    End If
-                End If
-                Err.Clear
-                On Error GoTo 0
-            End If
-        Next co
-
-        DoEvents
-        If readyCount >= expectedCharts Then Exit Do
-    Loop While (MicroTimer() - startT) < timeoutSeconds
-
-    WaitForResidualChartsRender = (readyCount >= expectedCharts)
-End Function
 
 Private Sub RunPipeline(ByVal choice As String, ByRef perfLog As Object)
     Dim i As Integer, mName As String, stepStart As Double
