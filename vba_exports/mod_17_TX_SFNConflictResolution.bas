@@ -493,13 +493,14 @@ Private Function DoesMovedRowFormValidLocalGroup(ByVal movedRowIdx As Long) As B
 End Function
 
 Private Function GetMaxMoveOffset(ByVal sourceSFN As Long) As Long
-    Dim lowerRoom As Long, bitmapLimit As Long
+    Dim lowerRoom As Long, bitmapLimit As Long, maxOffset As Long
     lowerRoom = sourceSFN
     bitmapLimit = mBitmapLen
     If bitmapLimit <= 0 Then bitmapLimit = 64
-    GetMaxMoveOffset = bitmapLimit
-    If lowerRoom < GetMaxMoveOffset Then GetMaxMoveOffset = lowerRoom
-    If GetMaxMoveOffset < 1 Then GetMaxMoveOffset = 1
+    maxOffset = bitmapLimit
+    If lowerRoom < maxOffset Then maxOffset = lowerRoom
+    If maxOffset < 1 Then maxOffset = 1
+    GetMaxMoveOffset = maxOffset
 End Function
 
 Private Function GetRowMinRxTime(ByVal rowIdx As Long) As Double
