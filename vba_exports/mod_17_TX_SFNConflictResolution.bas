@@ -288,9 +288,9 @@ Private Function ValidateInputMonotoneTXSFN() As Boolean
     Dim curVal As Long
     ValidateInputMonotoneTXSFN = True
     If mFilteredCount <= 1 Then Exit Function
-    prevVal = mInitialSFN(1)
+    prevVal = CLng(mData(1, mIdxSFNCol))
     For r = 2 To mFilteredCount
-        curVal = mInitialSFN(r)
+        curVal = CLng(mData(r, mIdxSFNCol))
         If curVal < prevVal Then
             ValidateInputMonotoneTXSFN = False
             Exit Function
@@ -344,43 +344,72 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     Dim leftRow As Long
     Dim rightRow As Long
     Dim i As Long
+    Dim poolSize As Long
+
+    If startRow < 1 Or startRow >= mFilteredCount Then Exit Sub
+
     leftRow = startRow
     rightRow = startRow + 1
-    Do While leftRow > 1 And mCurrentSFN(leftRow - 1) = mCurrentSFN(leftRow)
+
+    Do While leftRow > 1
+        If mCurrentSFN(leftRow - 1) <> mCurrentSFN(leftRow) Then Exit Do
         leftRow = leftRow - 1
     Loop
-    Do While rightRow < mFilteredCount And mCurrentSFN(rightRow + 1) = mCurrentSFN(rightRow)
+
+    Do While rightRow < mFilteredCount
+        If mCurrentSFN(rightRow + 1) <> mCurrentSFN(rightRow) Then Exit Do
         rightRow = rightRow + 1
     Loop
-    mPoolCount = rightRow - leftRow + 1
+
+    poolSize = rightRow - leftRow + 1
+    If poolSize <= 0 Then Exit Sub
+
+    mPoolCount = poolSize
     ReDim mPoolRows(1 To mPoolCount)
+
     For i = 1 To mPoolCount
         mPoolRows(i) = leftRow + i - 1
     Next i
+
     mPoolMinSFN = mCurrentSFN(leftRow)
     mPoolMaxSFN = mCurrentSFN(rightRow)
     mPoolCenter = (mPoolMinSFN + mPoolMaxSFN) / 2#
+
     If mPoolCount > mMaxObservedPoolSize Then mMaxObservedPoolSize = mPoolCount
+
     BuildPoolCests
 End Sub
 
 Private Sub BuildPoolCests()
-    Dim i As Long, r As Long, startIdx As Long
+    Dim i As Long
+    Dim r As Long
+    Dim startIdx As Long
+    Dim curSFN As Long
+
+    If mPoolCount <= 0 Then Exit Sub
+
     ReDim mPoolCestStartRows(1 To mPoolCount)
     ReDim mPoolCestEndRows(1 To mPoolCount)
     ReDim mPoolCestSFN(1 To mPoolCount)
+
     mPoolCestCount = 0
     i = 1
+
     Do While i <= mPoolCount
         startIdx = i
         r = mPoolRows(i)
-        Do While i < mPoolCount And mCurrentSFN(mPoolRows(i + 1)) = mCurrentSFN(r)
+        curSFN = mCurrentSFN(r)
+
+        Do While i < mPoolCount
+            If mCurrentSFN(mPoolRows(i + 1)) <> curSFN Then Exit Do
             i = i + 1
         Loop
+
         mPoolCestCount = mPoolCestCount + 1
         mPoolCestStartRows(mPoolCestCount) = startIdx
         mPoolCestEndRows(mPoolCestCount) = i
-        mPoolCestSFN(mPoolCestCount) = mCurrentSFN(r)
+        mPoolCestSFN(mPoolCestCount) = curSFN
+
         i = i + 1
     Loop
 End Sub
@@ -389,11 +418,17 @@ Private Sub ResolveEntirePool()
     Dim cestIdx As Long
     Dim rows() As Long
     Dim rowCount As Long
+
     If mPoolCestCount <= 0 Then Exit Sub
+
     For cestIdx = 1 To mPoolCestCount
         rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
+        If rowCount <= 0 Then GoTo NextCest
+
         rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
         Call TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx))
+
+NextCest:
     Next cestIdx
 End Sub
 
@@ -422,10 +457,12 @@ End Function
 Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Long, ByVal candidateCount As Long, ByVal sourceSFN As Long) As Boolean
     Dim i As Long
     Dim rowIdx As Long
+    Dim testSFN As Long
     For i = 1 To candidateCount
         rowIdx = candidateRows(i)
-        If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, sourceSFN + 1) Then
-            mCurrentSFN(rowIdx) = sourceSFN + 1
+        testSFN = sourceSFN + 1
+        If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
+            mCurrentSFN(rowIdx) = testSFN
             mWritten(rowIdx) = True
             TryPlaceOneMovedRow_NoSourceRetest = True
             Exit Function
@@ -484,15 +521,23 @@ End Function
 
 Private Sub WriteResolvedPoolToOutput()
     Dim i As Long
+    Dim rowIdx As Long
     For i = 1 To mPoolCount
-        mWritten(mPoolRows(i)) = True
+        rowIdx = mPoolRows(i)
+        If rowIdx >= 1 And rowIdx <= mFilteredCount Then
+            CopyRowToOutput rowIdx
+            mWritten(rowIdx) = True
+        End If
     Next i
 End Sub
 
 Private Sub WriteUnwrittenRowsToOutput()
     Dim r As Long
     For r = 1 To mFilteredCount
-        If Not mWritten(r) Then mWritten(r) = True
+        If Not mWritten(r) Then
+            CopyRowToOutput r
+            mWritten(r) = True
+        End If
     Next r
 End Sub
 
@@ -500,7 +545,18 @@ Private Sub RecomputeFinalTXperSFN()
 End Sub
 
 Private Sub FinalizeOutputVariant(ByRef data As Variant)
-    data = mData
+    data = mOutputData
+End Sub
+
+Private Sub CopyRowToOutput(ByVal rowIdx As Long)
+    Dim c As Long
+    Dim colCount As Long
+    If rowIdx < 1 Or rowIdx > mFilteredCount Then Exit Sub
+    colCount = UBound(mOutputData, 2)
+    For c = LBound(mData, 2) To colCount
+        mOutputData(rowIdx, c) = mData(rowIdx, c)
+    Next c
+    mOutputData(rowIdx, mIdxSFNCol) = mCurrentSFN(rowIdx)
 End Sub
 
 Private Function BuildSubsetExcludingOne(ByRef rowListIn() As Long, ByVal rowCountIn As Long, ByVal removeRowIdx As Long, ByRef rowListOut() As Long) As Long
@@ -554,7 +610,10 @@ Private Function MicroTimer_TXSFNCR() As Double
 End Function
 
 Private Sub InitializeOutputBuffer()
-    If mFilteredCount > 0 Then ReDim mOutputData(1 To mFilteredCount, 1 To UBound(mData, 2))
+    Dim colCount As Long
+    If mFilteredCount <= 0 Then Exit Sub
+    colCount = UBound(mData, 2)
+    ReDim mOutputData(1 To mFilteredCount, 1 To colCount)
     mOutputCount = 0
 End Sub
 
