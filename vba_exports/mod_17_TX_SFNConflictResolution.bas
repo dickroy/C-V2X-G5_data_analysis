@@ -113,6 +113,7 @@ Public Sub TX_SFNConflictResolution( _
 
     t0 = MicroTimer_TXSFNCR()
     WriteUnwrittenRowsToOutput
+    RewriteOutputInFinalSFNOrder
     RecomputeFinalTXperSFN
     ValidateResolvedRXTimingOnly
     FinalizeOutputVariant data
@@ -335,19 +336,21 @@ Private Sub WriteUnwrittenRowsToOutput()
 End Sub
 
 Private Sub RecomputeFinalTXperSFN()
-    Dim r As Long, prevSFN As Long, txPer As Long
+    Dim r As Long, prevSFN As Long, curSFN As Long, txPer As Long
     If mFilteredCount <= 0 Then Exit Sub
-    prevSFN = mCurrentSFN(1): txPer = 1
+    If mIdxTXperSFN <= 0 Then Exit Sub
+    prevSFN = CLng(mOutputData(1, mIdxSFNCol)): txPer = 1
     For r = 1 To mFilteredCount
+        curSFN = CLng(mOutputData(r, mIdxSFNCol))
         If r = 1 Then
             txPer = 1
-        ElseIf mCurrentSFN(r) = prevSFN Then
+        ElseIf curSFN = prevSFN Then
             txPer = txPer + 1
         Else
             txPer = 1
-            prevSFN = mCurrentSFN(r)
         End If
-        If mIdxTXperSFN > 0 Then mOutputData(r, mIdxTXperSFN) = txPer
+        mOutputData(r, mIdxTXperSFN) = txPer
+        prevSFN = curSFN
     Next r
 End Sub
 
@@ -371,11 +374,44 @@ Private Sub CopyRowToOutput(ByVal rowIdx As Long)
     mOutputData(rowIdx, mIdxSFNCol) = mCurrentSFN(rowIdx)
 End Sub
 
+Private Sub RewriteOutputInFinalSFNOrder()
+    Dim order() As Long, i As Long, outPos As Long, rowIdx As Long
+    Dim c As Long, colCount As Long, orderedData() As Variant
+    If mFilteredCount <= 0 Then Exit Sub
+    ReDim order(1 To mFilteredCount)
+    For i = 1 To mFilteredCount: order(i) = i: Next i
+    SortRowIndexByCurrentSFN order, 1, mFilteredCount
+    colCount = UBound(mOutputData, 2)
+    ReDim orderedData(1 To mFilteredCount, 1 To colCount)
+    For outPos = 1 To mFilteredCount
+        rowIdx = order(outPos)
+        For c = LBound(mData, 2) To colCount: orderedData(outPos, c) = mData(rowIdx, c): Next c
+        orderedData(outPos, mIdxSFNCol) = mCurrentSFN(rowIdx)
+    Next outPos
+    mOutputData = orderedData
+End Sub
+
 Private Function BuildSubsetExcludingOne(ByRef rowListIn() As Long, ByVal rowCountIn As Long, ByVal removeRowIdx As Long, ByRef rowListOut() As Long) As Long: BuildSubsetExcludingOne = 0: End Function
 Private Sub Sort3RowsByMinRxTime(ByRef rowA As Long, ByRef rowB As Long, ByRef rowC As Long): End Sub
 Private Sub QuickSortLongs(ByRef arr() As Long, ByVal first As Long, ByVal last As Long): End Sub
-Private Sub SortRowIndexByCurrentSFN(ByRef arr() As Long, ByVal first As Long, ByVal last As Long): End Sub
-Private Function CompareRowOrder(ByVal rowA As Long, ByVal rowB As Long) As Long: CompareRowOrder = Sgn(mCurrentSFN(rowA) - mCurrentSFN(rowB)): End Function
+Private Sub SortRowIndexByCurrentSFN(ByRef arr() As Long, ByVal first As Long, ByVal last As Long)
+    Dim i As Long, j As Long, pivot As Long, tmp As Long
+    i = first: j = last: pivot = arr((first + last) \ 2)
+    Do While i <= j
+        Do While CompareRowOrder(arr(i), pivot) < 0: i = i + 1: Loop
+        Do While CompareRowOrder(arr(j), pivot) > 0: j = j - 1: Loop
+        If i <= j Then
+            tmp = arr(i): arr(i) = arr(j): arr(j) = tmp
+            i = i + 1: j = j - 1
+        End If
+    Loop
+    If first < j Then SortRowIndexByCurrentSFN arr, first, j
+    If i < last Then SortRowIndexByCurrentSFN arr, i, last
+End Sub
+Private Function CompareRowOrder(ByVal rowA As Long, ByVal rowB As Long) As Long
+    CompareRowOrder = Sgn(mCurrentSFN(rowA) - mCurrentSFN(rowB))
+    If CompareRowOrder = 0 Then CompareRowOrder = Sgn(mRowOriginalIndex(rowA) - mRowOriginalIndex(rowB))
+End Function
 Private Sub UpdateStatusBar(): Application.StatusBar = "TX_SFN conflict resolution running...": End Sub
 Private Sub AddDiag(ByVal eventType As String, ByVal v1 As String, ByVal v2 As String, ByVal v3 As String, ByVal v4 As String, ByVal msg As String): End Sub
 Private Sub HistAddLong(ByRef dictObj As Object, ByVal keyVal As Long): End Sub
