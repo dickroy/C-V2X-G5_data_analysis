@@ -20,6 +20,7 @@ Private Type TCsetAnalysis
 End Type
 
 Private Const NO_RX_TIME As Double = -1#
+Private Const SFN_DIST_EPSILON As Double = 0.0000001#
 
 Private mData As Variant
 Private mFilteredCount As Long
@@ -238,7 +239,7 @@ Private Function ResolveEntirePool() As Boolean
                 ElseIf sfnDist < bestDist Then
                     pickIdx = cestIdx
                     bestDist = sfnDist
-                ElseIf sfnDist = bestDist Then
+                ElseIf Abs(sfnDist - bestDist) < SFN_DIST_EPSILON Then
                     If mPoolCestSFN(cestIdx) < mPoolCestSFN(pickIdx) Then pickIdx = cestIdx
                 End If
             End If
