@@ -160,18 +160,31 @@ Private Sub PrepareRowDerivedData()
 End Sub
 
 Private Function FindNextConflictStart() As Long
-    Dim r As Long
-    For r = mScanPos To mFilteredCount - 1
-        If mCurrentSFN(r) = mCurrentSFN(r + 1) Then FindNextConflictStart = r: Exit Function
-    Next r
+    Dim groupStart As Long, groupEnd As Long
+    groupStart = mScanPos
+    If groupStart < 1 Then groupStart = 1
+    Do While groupStart <= mFilteredCount
+        groupEnd = FindGroupEnd(groupStart)
+        If IsTrueConflictGroup(groupStart, groupEnd) Then
+            FindNextConflictStart = groupStart
+            Exit Function
+        End If
+        groupStart = groupEnd + 1
+    Loop
 End Function
 
 Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     Dim leftRow As Long, rightRow As Long, i As Long
+    Dim centerStart As Long, centerEnd As Long
     If startRow < 1 Or startRow >= mFilteredCount Then Exit Sub
-    leftRow = startRow: rightRow = startRow + 1
-    Do While leftRow > 1 And mCurrentSFN(leftRow - 1) = mCurrentSFN(leftRow): leftRow = leftRow - 1: Loop
-    Do While rightRow < mFilteredCount And mCurrentSFN(rightRow + 1) = mCurrentSFN(rightRow): rightRow = rightRow + 1: Loop
+    centerStart = FindGroupStart(startRow)
+    centerEnd = FindGroupEnd(startRow)
+    leftRow = centerStart
+    rightRow = centerEnd
+
+    If leftRow > 1 Then leftRow = FindGroupStart(leftRow - 1)
+    If rightRow < mFilteredCount Then rightRow = FindGroupEnd(rightRow + 1)
+
     mPoolCount = rightRow - leftRow + 1: If mPoolCount <= 0 Then Exit Sub
     ReDim mPoolRows(1 To mPoolCount)
     For i = 1 To mPoolCount: mPoolRows(i) = leftRow + i - 1: Next i
@@ -181,28 +194,50 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
 End Sub
 
 Private Sub BuildPoolCests()
-    Dim i As Long, r As Long, startIdx As Long, curSFN As Long
+    Dim i As Long, groupStartIdx As Long, groupEndIdx As Long
+    Dim absStart As Long, absEnd As Long
     If mPoolCount <= 0 Then Exit Sub
     ReDim mPoolCestStartRows(1 To mPoolCount)
     ReDim mPoolCestEndRows(1 To mPoolCount)
     ReDim mPoolCestSFN(1 To mPoolCount)
-    mPoolCestCount = 0: i = 1
+    mPoolCestCount = 0
+    i = 1
     Do While i <= mPoolCount
-        startIdx = i: r = mPoolRows(i): curSFN = mCurrentSFN(r)
-        Do While i < mPoolCount
-            If mCurrentSFN(mPoolRows(i + 1)) <> curSFN Then Exit Do
-            i = i + 1
+        groupStartIdx = i
+        groupEndIdx = i
+        Do While groupEndIdx < mPoolCount
+            If mCurrentSFN(mPoolRows(groupEndIdx + 1)) <> mCurrentSFN(mPoolRows(groupStartIdx)) Then Exit Do
+            groupEndIdx = groupEndIdx + 1
         Loop
-        mPoolCestCount = mPoolCestCount + 1: mPoolCestStartRows(mPoolCestCount) = startIdx: mPoolCestEndRows(mPoolCestCount) = i: mPoolCestSFN(mPoolCestCount) = curSFN
-        If DEBUG_TXSFNCR Then Debug.Print "CEST chunk: idx=" & mPoolCestCount & " rows=" & startIdx & ".." & i & " sfn=" & curSFN & " count=" & (i - startIdx + 1)
-        i = i + 1
+
+        absStart = mPoolRows(groupStartIdx)
+        absEnd = mPoolRows(groupEndIdx)
+        If IsTrueConflictGroup(absStart, absEnd) Then
+            mPoolCestCount = mPoolCestCount + 1
+            mPoolCestStartRows(mPoolCestCount) = groupStartIdx
+            mPoolCestEndRows(mPoolCestCount) = groupEndIdx
+            mPoolCestSFN(mPoolCestCount) = mCurrentSFN(absStart)
+            If DEBUG_TXSFNCR Then Debug.Print "CEST chunk: idx=" & mPoolCestCount & " rows=" & groupStartIdx & ".." & groupEndIdx & " sfn=" & mPoolCestSFN(mPoolCestCount) & " count=" & (groupEndIdx - groupStartIdx + 1)
+        End If
+
+        i = groupEndIdx + 1
     Loop
 End Sub
 
 Private Function ResolveEntirePool() As Boolean
     Dim cestIdx As Long, rows() As Long, rowCount As Long
+    Dim unresolvedCount As Long, nextIdx As Long
+    Dim handled() As Boolean
     If mPoolCestCount <= 0 Then Exit Function
-    For cestIdx = 1 To mPoolCestCount
+    ReDim handled(1 To mPoolCestCount)
+    unresolvedCount = mPoolCestCount
+    Do While unresolvedCount > 0
+        nextIdx = PickNextCsetInsideOut(handled)
+        If nextIdx <= 0 Then Exit Do
+        handled(nextIdx) = True
+        unresolvedCount = unresolvedCount - 1
+
+        cestIdx = nextIdx
         rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
         If rowCount > 1 Then
             rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
@@ -214,10 +249,12 @@ Private Function ResolveEntirePool() As Boolean
                 mUnresolvedAttemptCount = mUnresolvedAttemptCount + 1
             End If
         End If
-    Next cestIdx
+    Loop
 End Function
 
 Private Function TryResolveCset(ByRef rows() As Long, ByVal rowCount As Long, ByVal sourceSFN As Long) As Boolean
+    If rowCount <= 1 Then Exit Function
+    If Not IsTrueConflictRows(rows, rowCount) Then Exit Function
     Dim analysis As TCsetAnalysis: analysis = AnalyzeCsetSingleMoves(rows, rowCount)
     TryResolveCset = (analysis.candidateCount > 0 And TryPlaceOneMovedRow_NoSourceRetest(analysis.candidateRows, analysis.candidateCount, sourceSFN))
 End Function
@@ -347,6 +384,7 @@ Private Sub RecomputeFinalTXperSFN()
             txPer = 1
             prevSFN = mCurrentSFN(r)
         End If
+        If txPer < 1 Then txPer = 1
         If mIdxTXperSFN > 0 Then mOutputData(r, mIdxTXperSFN) = txPer
     Next r
 End Sub
@@ -380,7 +418,13 @@ Private Sub UpdateStatusBar(): Application.StatusBar = "TX_SFN conflict resoluti
 Private Sub AddDiag(ByVal eventType As String, ByVal v1 As String, ByVal v2 As String, ByVal v3 As String, ByVal v4 As String, ByVal msg As String): End Sub
 Private Sub HistAddLong(ByRef dictObj As Object, ByVal keyVal As Long): End Sub
 Private Sub DumpHistogram(ByVal ws As Worksheet, ByVal startRow As Long, ByVal startCol As Long, ByVal titleText As String, ByRef dictObj As Object): End Sub
-Private Function SafeDiv(ByVal numerator As Double, ByVal denominator As Double) As Double: If denominator = 0# Then SafeDiv = 0# Else SafeDiv = numerator / denominator: End If: End Function
+Private Function SafeDiv(ByVal numerator As Double, ByVal denominator As Double) As Double
+    If denominator = 0# Then
+        SafeDiv = 0#
+    Else
+        SafeDiv = numerator / denominator
+    End If
+End Function
 Private Sub WriteDiagnosticLog_TXSFNCR(ByVal totalRows As Long, ByVal calcTime As Double): End Sub
 Private Function MicroTimer_TXSFNCR() As Double
     Dim cyTicks As Currency, cyFreq As Currency
@@ -537,4 +581,58 @@ Private Function SafeLongArrayUBound(ByRef arr() As Long) As Long
         Err.Clear
     End If
     On Error GoTo 0
+End Function
+
+Private Function FindGroupStart(ByVal rowIdx As Long) As Long
+    FindGroupStart = rowIdx
+    Do While FindGroupStart > 1
+        If mCurrentSFN(FindGroupStart - 1) <> mCurrentSFN(rowIdx) Then Exit Do
+        FindGroupStart = FindGroupStart - 1
+    Loop
+End Function
+
+Private Function FindGroupEnd(ByVal rowIdx As Long) As Long
+    FindGroupEnd = rowIdx
+    Do While FindGroupEnd < mFilteredCount
+        If mCurrentSFN(FindGroupEnd + 1) <> mCurrentSFN(rowIdx) Then Exit Do
+        FindGroupEnd = FindGroupEnd + 1
+    Loop
+End Function
+
+Private Function IsTrueConflictGroup(ByVal startRow As Long, ByVal endRow As Long) As Boolean
+    Dim rows() As Long, rowCount As Long, i As Long
+    If startRow < 1 Or endRow > mFilteredCount Then Exit Function
+    rowCount = endRow - startRow + 1
+    If rowCount <= 1 Then Exit Function
+    ReDim rows(1 To rowCount)
+    For i = 1 To rowCount
+        rows(i) = startRow + i - 1
+    Next i
+    IsTrueConflictGroup = IsTrueConflictRows(rows, rowCount)
+End Function
+
+Private Function IsTrueConflictRows(ByRef rows() As Long, ByVal rowCount As Long) As Boolean
+    If rowCount <= 1 Then Exit Function
+    IsTrueConflictRows = (Not ValidateBucketRows(rows, rowCount))
+End Function
+
+Private Function PickNextCsetInsideOut(ByRef handled() As Boolean) As Long
+    Dim i As Long, bestIdx As Long
+    Dim dist As Double, bestDist As Double
+    bestDist = -1#
+    For i = 1 To mPoolCestCount
+        If Not handled(i) Then
+            dist = Abs(CDbl(mPoolCestSFN(i)) - mPoolCenter)
+            If bestIdx = 0 Then
+                bestIdx = i
+                bestDist = dist
+            ElseIf dist < bestDist Then
+                bestIdx = i
+                bestDist = dist
+            ElseIf dist = bestDist Then
+                If mPoolCestSFN(i) < mPoolCestSFN(bestIdx) Then bestIdx = i
+            End If
+        End If
+    Next i
+    PickNextCsetInsideOut = bestIdx
 End Function
