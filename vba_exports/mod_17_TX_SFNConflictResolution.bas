@@ -1,8 +1,9 @@
 Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-' Version: V1.0.0
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.0"
+' Version: V1.0.1
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.1"
+Private Const DEBUG_TXSFNCR As Boolean = True
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter_TXSFNCR Lib "kernel32" Alias "QueryPerformanceCounter" (ByRef lpPerformanceCount As Currency) As Long
@@ -124,6 +125,7 @@ Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long
     mRxDataColIdx = rxDataColIdx: mRxStationIDs = rxStationIDs: mActiveRxCount = activeRxCount
     Set mDictS2V = dictS2V: Set mDictVC = dictVC: Set mDictA2P = dictA2P: Set mDictP2R = dictP2R: Set mDictP2Sigma = dictP2Sigma
     mTxBitmap = txBitmap: mBitmapLen = bitmapLen: mScanPos = 1: mOutputWritePos = 1: mPoolCount = 0: mPoolCestCount = 0
+    If DEBUG_TXSFNCR Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
 End Sub
 
 Private Function ValidateInputMonotoneTXSFN() As Boolean
@@ -174,6 +176,7 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     ReDim mPoolRows(1 To mPoolCount)
     For i = 1 To mPoolCount: mPoolRows(i) = leftRow + i - 1: Next i
     mPoolMinSFN = mCurrentSFN(leftRow): mPoolMaxSFN = mCurrentSFN(rightRow): mPoolCenter = (mPoolMinSFN + mPoolMaxSFN) / 2#: If mPoolCount > mMaxObservedPoolSize Then mMaxObservedPoolSize = mPoolCount
+    If DEBUG_TXSFNCR Then Debug.Print "POOL built: startRow=" & startRow & " leftRow=" & leftRow & " rightRow=" & rightRow & " poolCount=" & mPoolCount & " minSFN=" & mPoolMinSFN & " maxSFN=" & mPoolMaxSFN
     BuildPoolCests
 End Sub
 
@@ -191,6 +194,7 @@ Private Sub BuildPoolCests()
             i = i + 1
         Loop
         mPoolCestCount = mPoolCestCount + 1: mPoolCestStartRows(mPoolCestCount) = startIdx: mPoolCestEndRows(mPoolCestCount) = i: mPoolCestSFN(mPoolCestCount) = curSFN
+        If DEBUG_TXSFNCR Then Debug.Print "CEST chunk: idx=" & mPoolCestCount & " rows=" & startIdx & ".." & i & " sfn=" & curSFN & " count=" & (i - startIdx + 1)
         i = i + 1
     Loop
 End Sub
@@ -202,6 +206,7 @@ Private Function ResolveEntirePool() As Boolean
         rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
         If rowCount > 1 Then
             rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
+            If DEBUG_TXSFNCR Then Debug.Print "TryResolveCset: cestIdx=" & cestIdx & " rowCount=" & rowCount & " sourceSFN=" & mPoolCestSFN(cestIdx)
             If TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx)) Then
                 ResolveEntirePool = True
                 mPoolCountResolved = mPoolCountResolved + 1
@@ -236,6 +241,7 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
             If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
                 mCurrentSFN(rowIdx) = testSFN
                 If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                    If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
                     TryPlaceOneMovedRow_NoSourceRetest = True
                     Exit Function
                 End If
@@ -246,6 +252,7 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
             If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
                 mCurrentSFN(rowIdx) = testSFN
                 If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                    If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
                     TryPlaceOneMovedRow_NoSourceRetest = True
                     Exit Function
                 End If
