@@ -773,18 +773,24 @@ runTX_SFN_CR = (crChoice <> vbNo)
  Dim prevResolvedSFN As Long
  Dim currentResolvedSFN As Long
  Dim resolvedTXperSFN As Long
+ Dim hasPrevResolvedSFN As Boolean
   
  For r = 1 To filteredCount
      sfnKey = data(r, idxSFNCol)
 
      If runTX_SFN_CR Then
-         currentResolvedSFN = CLng(sfnKey)
-         If r = 1 Or currentResolvedSFN <> prevResolvedSFN Then
+         If IsNumeric(sfnKey) Then
+             currentResolvedSFN = CLng(sfnKey)
+         Else
+             currentResolvedSFN = 0
+         End If
+         If Not hasPrevResolvedSFN Or currentResolvedSFN <> prevResolvedSFN Then
              resolvedTXperSFN = 1
          Else
              resolvedTXperSFN = resolvedTXperSFN + 1
          End If
          prevResolvedSFN = currentResolvedSFN
+         hasPrevResolvedSFN = True
          data(r, idxTXperSFN) = resolvedTXperSFN
      Else
          If Not IsEmpty(sfnKey) And sfnMap.Exists(sfnKey) Then
