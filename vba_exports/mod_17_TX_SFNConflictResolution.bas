@@ -434,7 +434,7 @@ Private Sub RecomputeFinalTXperSFN()
     outputRows = mOutputWritePos - 1
     If outputRows <= 0 Then Exit Sub
     prevSFN = CLng(mOutputData(1, mIdxSFNCol))
-    txPer = 0
+    txPer = 1
     For r = 1 To outputRows
         curSFN = CLng(mOutputData(r, mIdxSFNCol))
         If r = 1 Then
@@ -445,7 +445,6 @@ Private Sub RecomputeFinalTXperSFN()
             txPer = 1
             prevSFN = curSFN
         End If
-        If txPer < 1 Then txPer = 1
         If mIdxTXperSFN > 0 Then mOutputData(r, mIdxTXperSFN) = txPer
     Next r
 End Sub
