@@ -699,6 +699,8 @@ runTX_SFN_CR = (crChoice <> vbNo)
         
     Loop While parameterChanged
     
+    continueLoop = False
+    
     totalProcTime = MicroTimer() - startTime
     
     
@@ -840,6 +842,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
                  "Total Analytics Pipeline Time: " & Format(pipelineTime, "0.000") & " seconds"
                  
     MsgBox summaryMsg, vbInformation, "Pipeline Performance Monitor"
+Loop
 End Sub
 
 Private Function RenderVendorPreWlsSection(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, pduKeys As Variant, startRowPos As Long) As Long
