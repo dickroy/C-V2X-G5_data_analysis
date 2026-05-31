@@ -452,18 +452,13 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Dim targetR As Long
     Dim txParamsChanged As Boolean
     Dim txLoopChanged As Boolean
-    Dim continueLoop As Boolean
     Dim linRegCompleted As Boolean
-    Dim linRegNeedsRerun As Boolean
     Dim currentTX As String
     Dim prelimRendered As Boolean
 
-    continueLoop = True
     prelimRendered = False
 
-    Do While continueLoop
-        txLoopChanged = False
-        linRegNeedsRerun = False
+    txLoopChanged = False
 
         ' -------------------------------
         ' 1) INITIAL SFN ESTIMATION PASS
@@ -699,8 +694,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
         
     Loop While parameterChanged
     
-    continueLoop = False
-    
     totalProcTime = MicroTimer() - startTime
     
     
@@ -842,7 +835,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
                  "Total Analytics Pipeline Time: " & Format(pipelineTime, "0.000") & " seconds"
                  
     MsgBox summaryMsg, vbInformation, "Pipeline Performance Monitor"
-Loop
 End Sub
 
 Private Function RenderVendorPreWlsSection(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, pduKeys As Variant, startRowPos As Long) As Long
