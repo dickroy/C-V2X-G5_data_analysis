@@ -335,19 +335,23 @@ Private Sub WriteUnwrittenRowsToOutput()
 End Sub
 
 Private Sub RecomputeFinalTXperSFN()
-    Dim r As Long, prevSFN As Long, txPer As Long
+    Dim r As Long, prevSFN As Long, curSFN As Long, txPer As Long
     If mFilteredCount <= 0 Then Exit Sub
-    prevSFN = mCurrentSFN(1): txPer = 1
+    If mIdxTXperSFN <= 0 Then Exit Sub
+
+    prevSFN = CLng(mOutputData(1, mIdxSFNCol))
     For r = 1 To mFilteredCount
+        curSFN = CLng(mOutputData(r, mIdxSFNCol))
         If r = 1 Then
             txPer = 1
-        ElseIf mCurrentSFN(r) = prevSFN Then
+        ElseIf curSFN = prevSFN Then
             txPer = txPer + 1
         Else
             txPer = 1
-            prevSFN = mCurrentSFN(r)
         End If
-        If mIdxTXperSFN > 0 Then mOutputData(r, mIdxTXperSFN) = txPer
+        If txPer < 1 Then txPer = 1
+        mOutputData(r, mIdxTXperSFN) = txPer
+        prevSFN = curSFN
     Next r
 End Sub
 
@@ -380,7 +384,13 @@ Private Sub UpdateStatusBar(): Application.StatusBar = "TX_SFN conflict resoluti
 Private Sub AddDiag(ByVal eventType As String, ByVal v1 As String, ByVal v2 As String, ByVal v3 As String, ByVal v4 As String, ByVal msg As String): End Sub
 Private Sub HistAddLong(ByRef dictObj As Object, ByVal keyVal As Long): End Sub
 Private Sub DumpHistogram(ByVal ws As Worksheet, ByVal startRow As Long, ByVal startCol As Long, ByVal titleText As String, ByRef dictObj As Object): End Sub
-Private Function SafeDiv(ByVal numerator As Double, ByVal denominator As Double) As Double: If denominator = 0# Then SafeDiv = 0# Else SafeDiv = numerator / denominator: End If: End Function
+Private Function SafeDiv(ByVal numerator As Double, ByVal denominator As Double) As Double
+    If denominator = 0# Then
+        SafeDiv = 0#
+    Else
+        SafeDiv = numerator / denominator
+    End If
+End Function
 Private Sub WriteDiagnosticLog_TXSFNCR(ByVal totalRows As Long, ByVal calcTime As Double): End Sub
 Private Function MicroTimer_TXSFNCR() As Double
     Dim cyTicks As Currency, cyFreq As Currency
