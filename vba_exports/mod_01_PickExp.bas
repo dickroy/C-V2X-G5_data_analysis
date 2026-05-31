@@ -779,12 +779,13 @@ runTX_SFN_CR = (crChoice <> vbNo)
      If runTX_SFN_CR Then
          If r = 1 Then
              finalTxPerSFN = 1
-         ElseIf CStr(sfnKey) = CStr(prevFinalSfnKey) Then
+         ElseIf IsNumeric(sfnKey) And IsNumeric(prevFinalSfnKey) And CLng(sfnKey) = CLng(prevFinalSfnKey) Then
              finalTxPerSFN = finalTxPerSFN + 1
          Else
              finalTxPerSFN = 1
          End If
          data(r, idxTXperSFN) = finalTxPerSFN
+         prevFinalSfnKey = sfnKey
      Else
          If Not IsEmpty(sfnKey) And sfnMap.Exists(sfnKey) Then
              data(r, idxTXperSFN) = CLng(sfnMap(sfnKey).count)
@@ -792,7 +793,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
              data(r, idxTXperSFN) = 0
          End If
      End If
-     prevFinalSfnKey = sfnKey
       
      rxSum = 0
      rxCnt = 0
