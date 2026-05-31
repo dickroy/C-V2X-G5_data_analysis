@@ -768,18 +768,33 @@ runTX_SFN_CR = (crChoice <> vbNo)
  Application.StatusBar = "Writing mapping calculations back to RAM..."
  
  Dim sfnKey As Variant
+ Dim prevResolvedSFN As Variant
+ Dim resolvedTXperSFN As Long
  Dim rxSum As Double
  Dim rxCnt As Long
  
  For r = 1 To filteredCount
      sfnKey = data(r, idxSFNCol)
-     
-     If Not IsEmpty(sfnKey) And sfnMap.Exists(sfnKey) Then
-         data(r, idxTXperSFN) = CLng(sfnMap(sfnKey).count)
+      
+     If runTX_SFN_CR Then
+         If r = 1 Then
+             resolvedTXperSFN = 1
+         ElseIf sfnKey = prevResolvedSFN Then
+             resolvedTXperSFN = resolvedTXperSFN + 1
+         Else
+             resolvedTXperSFN = 1
+         End If
+         If resolvedTXperSFN < 1 Then resolvedTXperSFN = 1
+         data(r, idxTXperSFN) = resolvedTXperSFN
+         prevResolvedSFN = sfnKey
      Else
-         data(r, idxTXperSFN) = 0
+         If Not IsEmpty(sfnKey) And sfnMap.Exists(sfnKey) Then
+             data(r, idxTXperSFN) = CLng(sfnMap(sfnKey).count)
+         Else
+             data(r, idxTXperSFN) = 0
+         End If
      End If
-     
+      
      rxSum = 0
      rxCnt = 0
      
