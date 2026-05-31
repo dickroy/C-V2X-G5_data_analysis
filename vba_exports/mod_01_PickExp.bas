@@ -770,16 +770,30 @@ runTX_SFN_CR = (crChoice <> vbNo)
  Dim sfnKey As Variant
  Dim rxSum As Double
  Dim rxCnt As Long
- 
+ Dim prevResolvedSFN As Long
+ Dim currentResolvedSFN As Long
+ Dim resolvedTXperSFN As Long
+  
  For r = 1 To filteredCount
      sfnKey = data(r, idxSFNCol)
-     
-     If Not IsEmpty(sfnKey) And sfnMap.Exists(sfnKey) Then
-         data(r, idxTXperSFN) = CLng(sfnMap(sfnKey).count)
+
+     If runTX_SFN_CR Then
+         currentResolvedSFN = CLng(sfnKey)
+         If r = 1 Or currentResolvedSFN <> prevResolvedSFN Then
+             resolvedTXperSFN = 1
+         Else
+             resolvedTXperSFN = resolvedTXperSFN + 1
+         End If
+         prevResolvedSFN = currentResolvedSFN
+         data(r, idxTXperSFN) = resolvedTXperSFN
      Else
-         data(r, idxTXperSFN) = 0
+         If Not IsEmpty(sfnKey) And sfnMap.Exists(sfnKey) Then
+             data(r, idxTXperSFN) = CLng(sfnMap(sfnKey).count)
+         Else
+             data(r, idxTXperSFN) = 0
+         End If
      End If
-     
+      
      rxSum = 0
      rxCnt = 0
      
