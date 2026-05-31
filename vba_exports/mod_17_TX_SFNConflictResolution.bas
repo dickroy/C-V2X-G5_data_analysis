@@ -1,8 +1,9 @@
 Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-' Version: V1.0.0
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.0"
+' Version: V1.0.1
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.1"
+Private Const DEBUG_TXSFNCR As Boolean = True
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter_TXSFNCR Lib "kernel32" Alias "QueryPerformanceCounter" (ByRef lpPerformanceCount As Currency) As Long
@@ -17,6 +18,8 @@ Private Type TCsetAnalysis
     candidateCount As Long
     candidateRows() As Long
 End Type
+
+Private Const NO_RX_TIME As Double = -1#
 
 Private mData As Variant
 Private mFilteredCount As Long
@@ -90,6 +93,7 @@ Public Sub TX_SFNConflictResolution( _
     Dim startTime As Double: startTime = MicroTimer_TXSFNCR()
     Dim t0 As Double
     Dim conflictStart As Long
+    Dim poolMoved As Boolean
 
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
     If Not ValidateInputMonotoneTXSFN() Then Exit Sub
@@ -101,14 +105,16 @@ Public Sub TX_SFNConflictResolution( _
         conflictStart = FindNextConflictStart()
         If conflictStart <= 0 Then Exit Do
         BuildPoolFromConflictStart conflictStart
-        ResolveEntirePool
+        poolMoved = ResolveEntirePool()
         WriteResolvedPoolToOutput
+        If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
         mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
     Loop
 
     t0 = MicroTimer_TXSFNCR()
     WriteUnwrittenRowsToOutput
     RecomputeFinalTXperSFN
+    ValidateResolvedRXTimingOnly
     FinalizeOutputVariant data
     mFinalizeSeconds = mFinalizeSeconds + (MicroTimer_TXSFNCR() - t0)
     elapsedSeconds = MicroTimer_TXSFNCR() - startTime
@@ -119,6 +125,7 @@ Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long
     mRxDataColIdx = rxDataColIdx: mRxStationIDs = rxStationIDs: mActiveRxCount = activeRxCount
     Set mDictS2V = dictS2V: Set mDictVC = dictVC: Set mDictA2P = dictA2P: Set mDictP2R = dictP2R: Set mDictP2Sigma = dictP2Sigma
     mTxBitmap = txBitmap: mBitmapLen = bitmapLen: mScanPos = 1: mOutputWritePos = 1: mPoolCount = 0: mPoolCestCount = 0
+    If DEBUG_TXSFNCR Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
 End Sub
 
 Private Function ValidateInputMonotoneTXSFN() As Boolean
@@ -147,7 +154,7 @@ Private Sub PrepareRowDerivedData()
     ReDim mRowRXCount(1 To mFilteredCount)
     ReDim mWritten(1 To mFilteredCount)
     For r = 1 To mFilteredCount
-        mInitialSFN(r) = CLng(mData(r, mIdxSFNCol)): mCurrentSFN(r) = mInitialSFN(r): mRowTXID(r) = CLng(mData(r, mIdxTXID)): mRowTXQTime(r) = CDbl(mData(r, mIdxTXQ)): mRowNsch(r) = CLng(mData(r, mIdxLEN)): mRowPduKey(r) = CStr(mData(r, mIdxLEN)): mRowMinRxTime(r) = CDbl(mData(r, mIdxTXQ)): mRowOriginalIndex(r) = r: mRowValidInput(r) = True
+        mInitialSFN(r) = CLng(mData(r, mIdxSFNCol)): mCurrentSFN(r) = mInitialSFN(r): mRowTXID(r) = CLng(mData(r, mIdxTXID)): mRowTXQTime(r) = CDbl(mData(r, mIdxTXQ)): mRowNsch(r) = CLng(mData(r, mIdxLEN)): mRowPduKey(r) = CStr(mData(r, mIdxLEN)): mRowMinRxTime(r) = GetRowMinRxTime(r): mRowOriginalIndex(r) = r: mRowValidInput(r) = True
         If mIdxRxCnt > 0 Then mRowRXCount(r) = CLng(mData(r, mIdxRxCnt)) Else mRowRXCount(r) = 0
     Next r
 End Sub
@@ -169,6 +176,7 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     ReDim mPoolRows(1 To mPoolCount)
     For i = 1 To mPoolCount: mPoolRows(i) = leftRow + i - 1: Next i
     mPoolMinSFN = mCurrentSFN(leftRow): mPoolMaxSFN = mCurrentSFN(rightRow): mPoolCenter = (mPoolMinSFN + mPoolMaxSFN) / 2#: If mPoolCount > mMaxObservedPoolSize Then mMaxObservedPoolSize = mPoolCount
+    If DEBUG_TXSFNCR Then Debug.Print "POOL built: startRow=" & startRow & " leftRow=" & leftRow & " rightRow=" & rightRow & " poolCount=" & mPoolCount & " minSFN=" & mPoolMinSFN & " maxSFN=" & mPoolMaxSFN
     BuildPoolCests
 End Sub
 
@@ -186,18 +194,28 @@ Private Sub BuildPoolCests()
             i = i + 1
         Loop
         mPoolCestCount = mPoolCestCount + 1: mPoolCestStartRows(mPoolCestCount) = startIdx: mPoolCestEndRows(mPoolCestCount) = i: mPoolCestSFN(mPoolCestCount) = curSFN
+        If DEBUG_TXSFNCR Then Debug.Print "CEST chunk: idx=" & mPoolCestCount & " rows=" & startIdx & ".." & i & " sfn=" & curSFN & " count=" & (i - startIdx + 1)
         i = i + 1
     Loop
 End Sub
 
-Private Sub ResolveEntirePool()
+Private Function ResolveEntirePool() As Boolean
     Dim cestIdx As Long, rows() As Long, rowCount As Long
-    If mPoolCestCount <= 0 Then Exit Sub
+    If mPoolCestCount <= 0 Then Exit Function
     For cestIdx = 1 To mPoolCestCount
         rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
-        If rowCount > 0 Then rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx)): Call TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx))
+        If rowCount > 1 Then
+            rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
+            If DEBUG_TXSFNCR Then Debug.Print "TryResolveCset: cestIdx=" & cestIdx & " rowCount=" & rowCount & " sourceSFN=" & mPoolCestSFN(cestIdx)
+            If TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx)) Then
+                ResolveEntirePool = True
+                mPoolCountResolved = mPoolCountResolved + 1
+            Else
+                mUnresolvedAttemptCount = mUnresolvedAttemptCount + 1
+            End If
+        End If
     Next cestIdx
-End Sub
+End Function
 
 Private Function TryResolveCset(ByRef rows() As Long, ByVal rowCount As Long, ByVal sourceSFN As Long) As Boolean
     Dim analysis As TCsetAnalysis: analysis = AnalyzeCsetSingleMoves(rows, rowCount)
@@ -212,18 +230,45 @@ Private Function AnalyzeCsetSingleMoves(ByRef rows() As Long, ByVal rowCount As 
 End Function
 
 Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Long, ByVal candidateCount As Long, ByVal sourceSFN As Long) As Boolean
-    Dim i As Long, rowIdx As Long, testSFN As Long
+    Dim i As Long, rowIdx As Long, testSFN As Long, delta As Long
+    Dim originalSFN As Long, maxOffset As Long
+    maxOffset = GetMaxMoveOffset(sourceSFN)
+    If maxOffset <= 0 Then Exit Function
     For i = 1 To candidateCount
-        rowIdx = candidateRows(i): testSFN = sourceSFN + 1
-        If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then mCurrentSFN(rowIdx) = testSFN: mWritten(rowIdx) = True: TryPlaceOneMovedRow_NoSourceRetest = True: Exit Function
+        rowIdx = candidateRows(i): originalSFN = mCurrentSFN(rowIdx)
+        For delta = 1 To maxOffset
+            testSFN = sourceSFN - delta
+            If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
+                mCurrentSFN(rowIdx) = testSFN
+                If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                    If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
+                    TryPlaceOneMovedRow_NoSourceRetest = True
+                    Exit Function
+                End If
+                mCurrentSFN(rowIdx) = originalSFN
+            End If
+
+            testSFN = sourceSFN + delta
+            If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
+                mCurrentSFN(rowIdx) = testSFN
+                If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                    If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
+                    TryPlaceOneMovedRow_NoSourceRetest = True
+                    Exit Function
+                End If
+                mCurrentSFN(rowIdx) = originalSFN
+            End If
+        Next delta
     Next i
 End Function
 
 Private Function IsOneMovedRowPlacementLegal_NoSourceRetest(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean
     If rowIdx < 1 Or rowIdx > mFilteredCount Then Exit Function
-    If testSFN < sourceSFN Then Exit Function
+    If testSFN = sourceSFN Then Exit Function
     If Not IsMoveWithinRowBounds(rowIdx, testSFN) Then Exit Function
     If Not IsBitmapSFNAllowed(testSFN) Then Exit Function
+    If Not EvaluatePoolBucketExcludingRow(sourceSFN, rowIdx) Then Exit Function
+    If Not EvaluatePoolBucketWithAddedRow(testSFN, rowIdx) Then Exit Function
     IsOneMovedRowPlacementLegal_NoSourceRetest = True
 End Function
 
@@ -231,15 +276,48 @@ Private Function TryForwardEscapeMove_NoSourceRetest(ByVal sourceSFN As Long, By
 Private Function ResolveTripleSplitDeterministic(ByRef rows() As Long, ByVal sourceSFN As Long) As Boolean
     Dim i As Long
     For i = LBound(rows) To UBound(rows)
+        If IsOneMovedRowPlacementLegal_NoSourceRetest(rows(i), sourceSFN, sourceSFN - 1) Then mCurrentSFN(rows(i)) = sourceSFN - 1: ResolveTripleSplitDeterministic = True: Exit Function
         If IsOneMovedRowPlacementLegal_NoSourceRetest(rows(i), sourceSFN, sourceSFN + 1) Then mCurrentSFN(rows(i)) = sourceSFN + 1: ResolveTripleSplitDeterministic = True: Exit Function
     Next i
 End Function
 Private Function IsPoolForcedSplitFirstMoveLegal(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean: IsPoolForcedSplitFirstMoveLegal = IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN): End Function
 Private Function IsPoolSingleRowPlacementLegal(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean: IsPoolSingleRowPlacementLegal = IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN): End Function
-Private Function EvaluatePoolBucketExcludingRow(ByVal sfnVal As Long, ByVal excludeRowIdx As Long) As Boolean: EvaluatePoolBucketExcludingRow = True: End Function
-Private Function EvaluatePoolBucketWithAddedRow(ByVal sfnVal As Long, ByVal addedRowIdx As Long) As Boolean: EvaluatePoolBucketWithAddedRow = True: End Function
-Private Function IsMoveWithinRowBounds(ByVal rowIdx As Long, ByVal testSFN As Long) As Boolean: IsMoveWithinRowBounds = True: End Function
-Private Function IsBitmapSFNAllowed(ByVal testSFN As Long) As Boolean: IsBitmapSFNAllowed = True: End Function
+Private Function EvaluatePoolBucketExcludingRow(ByVal sfnVal As Long, ByVal excludeRowIdx As Long) As Boolean
+    Dim rows() As Long, rowCount As Long
+    rows = CollectRowsForSFN(sfnVal, excludeRowIdx, -1, rowCount)
+    EvaluatePoolBucketExcludingRow = ValidateBucketRows(rows, rowCount)
+End Function
+Private Function EvaluatePoolBucketWithAddedRow(ByVal sfnVal As Long, ByVal addedRowIdx As Long) As Boolean
+    Dim rows() As Long, rowCount As Long
+    rows = CollectRowsForSFN(sfnVal, -1, addedRowIdx, rowCount)
+    EvaluatePoolBucketWithAddedRow = ValidateBucketRows(rows, rowCount)
+End Function
+Private Function IsMoveWithinRowBounds(ByVal rowIdx As Long, ByVal testSFN As Long) As Boolean
+    Dim prevSFN As Long, nextSFN As Long
+    If rowIdx < 1 Or rowIdx > mFilteredCount Then Exit Function
+    If testSFN < 0 Then Exit Function
+    prevSFN = testSFN
+    nextSFN = testSFN
+    If rowIdx > 1 Then prevSFN = mCurrentSFN(rowIdx - 1)
+    If rowIdx < mFilteredCount Then nextSFN = mCurrentSFN(rowIdx + 1)
+    If rowIdx > 1 And testSFN < prevSFN Then Exit Function
+    If rowIdx < mFilteredCount And testSFN > nextSFN Then Exit Function
+    IsMoveWithinRowBounds = True
+End Function
+Private Function IsBitmapSFNAllowed(ByVal testSFN As Long) As Boolean
+    Dim bitIdx As Long, bitChar As String
+    If mBitmapLen <= 0 Or LenB(mTxBitmap) = 0 Then
+        IsBitmapSFNAllowed = True
+        Exit Function
+    End If
+    bitIdx = ((testSFN Mod mBitmapLen) + mBitmapLen) Mod mBitmapLen + 1
+    If bitIdx > Len(mTxBitmap) Then
+        IsBitmapSFNAllowed = True
+        Exit Function
+    End If
+    bitChar = Mid$(mTxBitmap, bitIdx, 1)
+    IsBitmapSFNAllowed = (bitChar <> "0")
+End Function
 
 Private Sub WriteResolvedPoolToOutput()
     Dim i As Long, rowIdx As Long
@@ -270,6 +348,17 @@ Private Sub RecomputeFinalTXperSFN()
             prevSFN = mCurrentSFN(r)
         End If
         If mIdxTXperSFN > 0 Then mOutputData(r, mIdxTXperSFN) = txPer
+    Next r
+End Sub
+
+Private Sub ValidateResolvedRXTimingOnly()
+    Dim r As Long, rxMin As Double
+    mRemainingViolations = 0
+    For r = 1 To mFilteredCount
+        rxMin = mRowMinRxTime(r)
+        If rxMin <> NO_RX_TIME Then
+            If CDbl(mCurrentSFN(r)) > rxMin Then mRemainingViolations = mRemainingViolations + 1
+        End If
     Next r
 End Sub
 
@@ -310,4 +399,142 @@ Private Function ExtractPoolRows(ByVal startIdx As Long, ByVal endIdx As Long) A
     ReDim rows(1 To n)
     For i = 1 To n: rows(i) = mPoolRows(startIdx + i - 1): Next i
     ExtractPoolRows = rows
+End Function
+
+Private Function CollectRowsForSFN(ByVal sfnVal As Long, ByVal excludeRowIdx As Long, ByVal includeRowIdx As Long, ByRef rowCount As Long) As Long()
+    Dim rows() As Long, r As Long
+    ReDim rows(1 To mFilteredCount)
+    rowCount = 0
+    For r = 1 To mFilteredCount
+        If r <> excludeRowIdx Then
+            If mCurrentSFN(r) = sfnVal Or r = includeRowIdx Then
+                rowCount = rowCount + 1
+                rows(rowCount) = r
+            End If
+        End If
+    Next r
+    If rowCount = 0 Then
+        ReDim rows(1 To 1)
+    ElseIf rowCount < mFilteredCount Then
+        ReDim Preserve rows(1 To rowCount)
+    End If
+    CollectRowsForSFN = rows
+End Function
+
+Private Function ValidateBucketRows(ByRef rows() As Long, ByVal rowCount As Long) As Boolean
+    If rowCount <= 1 Then
+        ValidateBucketRows = True
+        Exit Function
+    End If
+    If Not IsGroupTXIDUnique(rows, rowCount) Then Exit Function
+    If Not IsGroupMergedStationsUnique(rows, rowCount) Then Exit Function
+    ValidateBucketRows = True
+End Function
+
+Private Function IsGroupTXIDUnique(ByRef rows() As Long, ByVal rowCount As Long) As Boolean
+    Dim dictTx As Object, i As Long, rowIdx As Long, txIDKey As String
+    Set dictTx = CreateObject("Scripting.Dictionary")
+    For i = 1 To rowCount
+        rowIdx = rows(i)
+        txIDKey = CStr(mRowTXID(rowIdx))
+        If dictTx.Exists(txIDKey) Then Exit Function
+        dictTx(txIDKey) = 1
+    Next i
+    IsGroupTXIDUnique = True
+End Function
+
+Private Function IsGroupMergedStationsUnique(ByRef rows() As Long, ByVal rowCount As Long) As Boolean
+    Dim dictStations As Object, i As Long, rowIdx As Long
+    Set dictStations = CreateObject("Scripting.Dictionary")
+    For i = 1 To rowCount
+        rowIdx = rows(i)
+        If Not AddRowStationsToDict(rowIdx, dictStations) Then Exit Function
+    Next i
+    IsGroupMergedStationsUnique = True
+End Function
+
+Private Function AddRowStationsToDict(ByVal rowIdx As Long, ByRef dictStations As Object) As Boolean
+    Dim txKey As String, st As Long, stationId As Long, stationKey As String, stationUB As Long
+    txKey = CStr(mRowTXID(rowIdx))
+    If dictStations.Exists(txKey) Then Exit Function
+    dictStations(txKey) = 1
+    stationUB = SafeLongArrayUBound(mRxStationIDs)
+    For st = 1 To mActiveRxCount
+        If HasRowRxForStation(rowIdx, st) Then
+            If stationUB > 0 And st <= stationUB Then
+                stationId = mRxStationIDs(st)
+            Else
+                stationId = st
+            End If
+            stationKey = CStr(stationId)
+            If dictStations.Exists(stationKey) Then Exit Function
+            dictStations(stationKey) = 1
+        End If
+    Next st
+    AddRowStationsToDict = True
+End Function
+
+Private Function HasRowRxForStation(ByVal rowIdx As Long, ByVal stationOrdinal As Long) As Boolean
+    Dim colIdx As Long, dataUB As Long
+    If stationOrdinal < 1 Or stationOrdinal > mActiveRxCount Then Exit Function
+    dataUB = SafeLongArrayUBound(mRxDataColIdx)
+    If dataUB <= 0 Then Exit Function
+    If stationOrdinal > dataUB Then Exit Function
+    colIdx = mRxDataColIdx(stationOrdinal)
+    If colIdx <= 0 Then Exit Function
+    If IsEmpty(mData(rowIdx, colIdx)) Then Exit Function
+    HasRowRxForStation = (LenB(Trim$(CStr(mData(rowIdx, colIdx)))) > 0)
+End Function
+
+Private Function DoesMovedRowFormValidLocalGroup(ByVal movedRowIdx As Long) As Boolean
+    Dim movedSFN As Long
+    movedSFN = mCurrentSFN(movedRowIdx)
+    If Not EvaluatePoolBucketWithAddedRow(movedSFN, movedRowIdx) Then Exit Function
+    DoesMovedRowFormValidLocalGroup = True
+End Function
+
+Private Function GetMaxMoveOffset(ByVal sourceSFN As Long) As Long
+    Dim lowerRoom As Long, bitmapLimit As Long, maxOffset As Long
+    lowerRoom = sourceSFN
+    bitmapLimit = mBitmapLen
+    If bitmapLimit <= 0 Then bitmapLimit = 64
+    maxOffset = bitmapLimit
+    If lowerRoom < maxOffset Then maxOffset = lowerRoom
+    If maxOffset < 1 Then maxOffset = 1
+    GetMaxMoveOffset = maxOffset
+End Function
+
+Private Function GetRowMinRxTime(ByVal rowIdx As Long) As Double
+    Dim st As Long, colIdx As Long, rxVal As Double, dataUB As Long
+    Dim hasValue As Boolean
+    GetRowMinRxTime = NO_RX_TIME
+    dataUB = SafeLongArrayUBound(mRxDataColIdx)
+    If dataUB <= 0 Then Exit Function
+    For st = 1 To mActiveRxCount
+        If st > dataUB Then Exit For
+        colIdx = mRxDataColIdx(st)
+        If colIdx > 0 Then
+            If Not IsEmpty(mData(rowIdx, colIdx)) Then
+                If IsNumeric(mData(rowIdx, colIdx)) Then
+                    rxVal = CDbl(mData(rowIdx, colIdx))
+                    If Not hasValue Then
+                        hasValue = True
+                        GetRowMinRxTime = rxVal
+                    ElseIf rxVal < GetRowMinRxTime Then
+                        GetRowMinRxTime = rxVal
+                    End If
+                End If
+            End If
+        End If
+    Next st
+End Function
+
+Private Function SafeLongArrayUBound(ByRef arr() As Long) As Long
+    On Error Resume Next
+    SafeLongArrayUBound = UBound(arr)
+    If Err.Number <> 0 Then
+        SafeLongArrayUBound = 0
+        Err.Clear
+    End If
+    On Error GoTo 0
 End Function
