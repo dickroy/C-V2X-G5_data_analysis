@@ -338,6 +338,7 @@ End Sub
 Private Sub RecomputeFinalTXperSFN()
     Dim r As Long, prevSFN As Long, curSFN As Long, txPer As Long
     If mFilteredCount <= 0 Then Exit Sub
+    If mIdxSFNCol <= 0 Then Exit Sub
     If mIdxTXperSFN <= 0 Then Exit Sub
     prevSFN = CLng(mOutputData(1, mIdxSFNCol)): txPer = 1
     For r = 1 To mFilteredCount
@@ -385,7 +386,7 @@ Private Sub RewriteOutputInFinalSFNOrder()
     ReDim orderedData(1 To mFilteredCount, 1 To colCount)
     For outPos = 1 To mFilteredCount
         rowIdx = order(outPos)
-        For c = LBound(mData, 2) To colCount: orderedData(outPos, c) = mData(rowIdx, c): Next c
+        For c = LBound(mOutputData, 2) To colCount: orderedData(outPos, c) = mOutputData(rowIdx, c): Next c
         orderedData(outPos, mIdxSFNCol) = mCurrentSFN(rowIdx)
     Next outPos
     mOutputData = orderedData
