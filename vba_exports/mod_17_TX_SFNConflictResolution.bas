@@ -20,6 +20,7 @@ Private Type TCsetAnalysis
 End Type
 
 Private Const NO_RX_TIME As Double = -1#
+Private Const SFN_DIST_EPSILON As Double = 0.0000001#
 
 Private mData As Variant
 Private mFilteredCount As Long
@@ -63,6 +64,8 @@ Private mPoolCestStartRows() As Long
 Private mPoolCestEndRows() As Long
 Private mPoolCestSFN() As Long
 Private mPoolCestCount As Long
+Private mPoolOutputRows() As Long
+Private mPoolOutputCount As Long
 Private mOutputData() As Variant
 Private mOutputCount As Long
 Private mOutputWritePos As Long
@@ -106,6 +109,7 @@ Public Sub TX_SFNConflictResolution( _
         If conflictStart <= 0 Then Exit Do
         BuildPoolFromConflictStart conflictStart
         poolMoved = ResolveEntirePool()
+        BufferResolvedPoolToOutputBuffer
         WriteResolvedPoolToOutput
         If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
         mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
@@ -124,7 +128,7 @@ Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long
     mData = data: mFilteredCount = filteredCount: mIdxSFNCol = idxSFNCol: mIdxTXID = idxTXID: mIdxTXQ = idxTXQ: mIdxLEN = idxLEN: mIdxTXperSFN = idxTXperSFN: mIdxRxCnt = idxRxCnt: mIdxAvg = idxAvg: mIdxTotLat = idxTotLat: mIdxGen = idxGen
     mRxDataColIdx = rxDataColIdx: mRxStationIDs = rxStationIDs: mActiveRxCount = activeRxCount
     Set mDictS2V = dictS2V: Set mDictVC = dictVC: Set mDictA2P = dictA2P: Set mDictP2R = dictP2R: Set mDictP2Sigma = dictP2Sigma
-    mTxBitmap = txBitmap: mBitmapLen = bitmapLen: mScanPos = 1: mOutputWritePos = 1: mPoolCount = 0: mPoolCestCount = 0
+    mTxBitmap = txBitmap: mBitmapLen = bitmapLen: mScanPos = 1: mOutputWritePos = 1: mPoolCount = 0: mPoolCestCount = 0: mPoolOutputCount = 0
     If DEBUG_TXSFNCR Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
 End Sub
 
@@ -160,18 +164,31 @@ Private Sub PrepareRowDerivedData()
 End Sub
 
 Private Function FindNextConflictStart() As Long
-    Dim r As Long
-    For r = mScanPos To mFilteredCount - 1
-        If mCurrentSFN(r) = mCurrentSFN(r + 1) Then FindNextConflictStart = r: Exit Function
-    Next r
+    Dim groupStart As Long, groupEnd As Long
+    groupStart = mScanPos
+    Do While groupStart <= mFilteredCount
+        groupEnd = FindGroupEndRow(groupStart)
+        If IsRangeCest(groupStart, groupEnd) Then
+            FindNextConflictStart = groupStart
+            Exit Function
+        End If
+        groupStart = groupEnd + 1
+    Loop
 End Function
 
 Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     Dim leftRow As Long, rightRow As Long, i As Long
     If startRow < 1 Or startRow >= mFilteredCount Then Exit Sub
-    leftRow = startRow: rightRow = startRow + 1
-    Do While leftRow > 1 And mCurrentSFN(leftRow - 1) = mCurrentSFN(leftRow): leftRow = leftRow - 1: Loop
-    Do While rightRow < mFilteredCount And mCurrentSFN(rightRow + 1) = mCurrentSFN(rightRow): rightRow = rightRow + 1: Loop
+    leftRow = FindGroupStartRow(startRow)
+    rightRow = FindGroupEndRow(startRow)
+    Do While leftRow > 1
+        If (mCurrentSFN(leftRow) - mCurrentSFN(leftRow - 1)) > 1 Then Exit Do
+        leftRow = leftRow - 1
+    Loop
+    Do While rightRow < mFilteredCount
+        If (mCurrentSFN(rightRow + 1) - mCurrentSFN(rightRow)) > 1 Then Exit Do
+        rightRow = rightRow + 1
+    Loop
     mPoolCount = rightRow - leftRow + 1: If mPoolCount <= 0 Then Exit Sub
     ReDim mPoolRows(1 To mPoolCount)
     For i = 1 To mPoolCount: mPoolRows(i) = leftRow + i - 1: Next i
@@ -181,40 +198,66 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
 End Sub
 
 Private Sub BuildPoolCests()
-    Dim i As Long, r As Long, startIdx As Long, curSFN As Long
+    Dim i As Long, startIdx As Long, endIdx As Long, curSFN As Long
     If mPoolCount <= 0 Then Exit Sub
     ReDim mPoolCestStartRows(1 To mPoolCount)
     ReDim mPoolCestEndRows(1 To mPoolCount)
     ReDim mPoolCestSFN(1 To mPoolCount)
     mPoolCestCount = 0: i = 1
     Do While i <= mPoolCount
-        startIdx = i: r = mPoolRows(i): curSFN = mCurrentSFN(r)
+        startIdx = i: curSFN = mCurrentSFN(mPoolRows(i))
         Do While i < mPoolCount
             If mCurrentSFN(mPoolRows(i + 1)) <> curSFN Then Exit Do
             i = i + 1
         Loop
-        mPoolCestCount = mPoolCestCount + 1: mPoolCestStartRows(mPoolCestCount) = startIdx: mPoolCestEndRows(mPoolCestCount) = i: mPoolCestSFN(mPoolCestCount) = curSFN
-        If DEBUG_TXSFNCR Then Debug.Print "CEST chunk: idx=" & mPoolCestCount & " rows=" & startIdx & ".." & i & " sfn=" & curSFN & " count=" & (i - startIdx + 1)
+        endIdx = i
+        If IsPoolRangeCest(startIdx, endIdx) Then
+            mPoolCestCount = mPoolCestCount + 1: mPoolCestStartRows(mPoolCestCount) = startIdx: mPoolCestEndRows(mPoolCestCount) = endIdx: mPoolCestSFN(mPoolCestCount) = curSFN
+            If DEBUG_TXSFNCR Then Debug.Print "CEST discovered: idx=" & mPoolCestCount & " rows=" & startIdx & ".." & endIdx & " sfn=" & curSFN & " count=" & (endIdx - startIdx + 1)
+        End If
         i = i + 1
     Loop
 End Sub
 
 Private Function ResolveEntirePool() As Boolean
     Dim cestIdx As Long, rows() As Long, rowCount As Long
+    Dim resolved() As Boolean, remaining As Long
+    Dim pickIdx As Long, sfnDist As Double, bestDist As Double
     If mPoolCestCount <= 0 Then Exit Function
-    For cestIdx = 1 To mPoolCestCount
-        rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
+    ReDim resolved(1 To mPoolCestCount)
+    remaining = mPoolCestCount
+    If DEBUG_TXSFNCR Then Debug.Print "INSIDE-OUT begin: cestCount=" & mPoolCestCount & " poolRows=" & mPoolCount & " minSFN=" & mPoolMinSFN & " maxSFN=" & mPoolMaxSFN
+    Do While remaining > 0
+        pickIdx = 0
+        bestDist = 0#
+        For cestIdx = 1 To mPoolCestCount
+            If Not resolved(cestIdx) Then
+                sfnDist = Abs(CDbl(mPoolCestSFN(cestIdx)) - mPoolCenter)
+                If pickIdx = 0 Then
+                    pickIdx = cestIdx
+                    bestDist = sfnDist
+                ElseIf sfnDist < bestDist Then
+                    pickIdx = cestIdx
+                    bestDist = sfnDist
+                ElseIf Abs(sfnDist - bestDist) < SFN_DIST_EPSILON Then
+                    If mPoolCestSFN(cestIdx) < mPoolCestSFN(pickIdx) Then pickIdx = cestIdx
+                End If
+            End If
+        Next cestIdx
+        resolved(pickIdx) = True
+        remaining = remaining - 1
+        rowCount = mPoolCestEndRows(pickIdx) - mPoolCestStartRows(pickIdx) + 1
         If rowCount > 1 Then
-            rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
-            If DEBUG_TXSFNCR Then Debug.Print "TryResolveCset: cestIdx=" & cestIdx & " rowCount=" & rowCount & " sourceSFN=" & mPoolCestSFN(cestIdx)
-            If TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx)) Then
+            rows = ExtractPoolRows(mPoolCestStartRows(pickIdx), mPoolCestEndRows(pickIdx))
+            If DEBUG_TXSFNCR Then Debug.Print "INSIDE-OUT resolve: cestIdx=" & pickIdx & " rows=" & mPoolCestStartRows(pickIdx) & ".." & mPoolCestEndRows(pickIdx) & " rowCount=" & rowCount & " sourceSFN=" & mPoolCestSFN(pickIdx)
+            If TryResolveCset(rows, rowCount, mPoolCestSFN(pickIdx)) Then
                 ResolveEntirePool = True
                 mPoolCountResolved = mPoolCountResolved + 1
             Else
                 mUnresolvedAttemptCount = mUnresolvedAttemptCount + 1
             End If
         End If
-    Next cestIdx
+    Loop
 End Function
 
 Private Function TryResolveCset(ByRef rows() As Long, ByVal rowCount As Long, ByVal sourceSFN As Long) As Boolean
@@ -321,9 +364,23 @@ End Function
 
 Private Sub WriteResolvedPoolToOutput()
     Dim i As Long, rowIdx As Long
-    For i = 1 To mPoolCount
-        rowIdx = mPoolRows(i)
+    If mPoolOutputCount <= 0 Then Exit Sub
+    If DEBUG_TXSFNCR Then Debug.Print "POOL buffer flush: rowCount=" & mPoolOutputCount & " firstRow=" & mPoolOutputRows(1) & " lastRow=" & mPoolOutputRows(mPoolOutputCount)
+    For i = 1 To mPoolOutputCount
+        rowIdx = mPoolOutputRows(i)
         If rowIdx >= 1 And rowIdx <= mFilteredCount Then CopyRowToOutput rowIdx: mWritten(rowIdx) = True
+    Next i
+    mPoolOutputCount = 0
+End Sub
+
+Private Sub BufferResolvedPoolToOutputBuffer()
+    Dim i As Long
+    If mPoolCount <= 0 Then Exit Sub
+    ReDim mPoolOutputRows(1 To mPoolCount)
+    mPoolOutputCount = 0
+    For i = 1 To mPoolCount
+        mPoolOutputCount = mPoolOutputCount + 1
+        mPoolOutputRows(mPoolOutputCount) = mPoolRows(i)
     Next i
 End Sub
 
@@ -399,6 +456,51 @@ Private Function ExtractPoolRows(ByVal startIdx As Long, ByVal endIdx As Long) A
     ReDim rows(1 To n)
     For i = 1 To n: rows(i) = mPoolRows(startIdx + i - 1): Next i
     ExtractPoolRows = rows
+End Function
+
+Private Function FindGroupStartRow(ByVal anyRow As Long) As Long
+    Dim r As Long, sfnVal As Long
+    If anyRow < 1 Then anyRow = 1
+    If anyRow > mFilteredCount Then anyRow = mFilteredCount
+    sfnVal = mCurrentSFN(anyRow)
+    r = anyRow
+    Do While r > 1
+        If mCurrentSFN(r - 1) <> sfnVal Then Exit Do
+        r = r - 1
+    Loop
+    FindGroupStartRow = r
+End Function
+
+Private Function FindGroupEndRow(ByVal groupStart As Long) As Long
+    Dim r As Long, sfnVal As Long
+    If groupStart < 1 Then groupStart = 1
+    If groupStart > mFilteredCount Then groupStart = mFilteredCount
+    sfnVal = mCurrentSFN(groupStart)
+    r = groupStart
+    Do While r < mFilteredCount
+        If mCurrentSFN(r + 1) <> sfnVal Then Exit Do
+        r = r + 1
+    Loop
+    FindGroupEndRow = r
+End Function
+
+Private Function IsRangeCest(ByVal startRow As Long, ByVal endRow As Long) As Boolean
+    Dim rows() As Long, i As Long, rowCount As Long
+    rowCount = endRow - startRow + 1
+    If rowCount <= 1 Then Exit Function
+    ReDim rows(1 To rowCount)
+    For i = 1 To rowCount
+        rows(i) = startRow + i - 1
+    Next i
+    IsRangeCest = (Not ValidateBucketRows(rows, rowCount))
+End Function
+
+Private Function IsPoolRangeCest(ByVal startIdx As Long, ByVal endIdx As Long) As Boolean
+    Dim rows() As Long, rowCount As Long
+    rowCount = endIdx - startIdx + 1
+    If rowCount <= 1 Then Exit Function
+    rows = ExtractPoolRows(startIdx, endIdx)
+    IsPoolRangeCest = (Not ValidateBucketRows(rows, rowCount))
 End Function
 
 Private Function CollectRowsForSFN(ByVal sfnVal As Long, ByVal excludeRowIdx As Long, ByVal includeRowIdx As Long, ByRef rowCount As Long) As Long()
