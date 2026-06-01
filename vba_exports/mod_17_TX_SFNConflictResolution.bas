@@ -1,13 +1,11 @@
 Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-' Version: V1.0.2
-' V1.0.2 changes:
-'   - Remove hard row-neighborhood rejection for escape moves
-'   - Allow pool-aware escape moves into empty SFNs
-'   - Rebuild/re-scan pool after successful move(s)
-'   - Resolve Csets starting from the inner-most Cset (closest to pool midpoint)
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.2"
+' Version: V1.0.3
+' V1.0.3 changes:
+'   - Fix CSet ordering runtime error 9 in inner-most selection
+'   - Preserve pool-aware escape resolution behavior
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.3"
 Private Const DEBUG_TXSFNCR As Boolean = True
 
 #If VBA7 Then
@@ -212,7 +210,6 @@ End Sub
 
 Private Function ResolveEntirePool() As Boolean
     Dim cestIdx As Long
-    Dim resolvedAny As Boolean
     Dim orderedCests() As Long
     Dim i As Long
 
@@ -223,11 +220,7 @@ Private Function ResolveEntirePool() As Boolean
     For i = LBound(orderedCests) To UBound(orderedCests)
         cestIdx = orderedCests(i)
         If cestIdx > 0 Then
-            If ResolveOneCset(cestIdx) Then
-                resolvedAny = True
-                ResolveEntirePool = True
-                Exit For
-            End If
+            If ResolveOneCset(cestIdx) Then ResolveEntirePool = True
         End If
     Next i
 End Function
@@ -282,13 +275,23 @@ Private Function GetOrderedCestIndexes() As Long()
 
     Do While outPos <= mPoolCestCount
         haveBest = False
+        bestIdx = 0
+        bestScore = 0#
         For i = 1 To mPoolCestCount
             If Not used(i) Then
                 score = Abs(CDbl(mPoolCestSFN(i)) - mPoolCenter)
-                If (Not haveBest) Or (score < bestScore) Or (score = bestScore And mPoolCestSFN(i) < mPoolCestSFN(bestIdx)) Then
+                If Not haveBest Then
                     haveBest = True
                     bestIdx = i
                     bestScore = score
+                ElseIf score < bestScore Then
+                    bestIdx = i
+                    bestScore = score
+                ElseIf score = bestScore Then
+                    If mPoolCestSFN(i) < mPoolCestSFN(bestIdx) Then
+                        bestIdx = i
+                        bestScore = score
+                    End If
                 End If
             End If
         Next i
