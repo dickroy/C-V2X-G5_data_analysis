@@ -1,8 +1,13 @@
 Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-' Version: V1.0.1
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.1"
+' Version: V1.0.2
+' V1.0.2 changes:
+'   - Remove hard row-neighborhood rejection for escape moves
+'   - Allow pool-aware escape moves into empty SFNs
+'   - Rebuild/re-scan pool after successful move(s)
+'   - Resolve Csets starting from the inner-most Cset (closest to pool midpoint)
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.2"
 Private Const DEBUG_TXSFNCR As Boolean = True
 
 #If VBA7 Then
@@ -93,7 +98,6 @@ Public Sub TX_SFNConflictResolution( _
     Dim startTime As Double: startTime = MicroTimer_TXSFNCR()
     Dim t0 As Double
     Dim conflictStart As Long
-    Dim poolMoved As Boolean
     
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
 
@@ -112,7 +116,7 @@ Public Sub TX_SFNConflictResolution( _
         conflictStart = FindNextConflictStart()
         If conflictStart <= 0 Then Exit Do
         BuildPoolFromConflictStart conflictStart
-        poolMoved = ResolveEntirePool()
+        ResolveEntirePool
         WriteResolvedPoolToOutput
         If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
         mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
@@ -207,40 +211,110 @@ Private Sub BuildPoolCests()
 End Sub
 
 Private Function ResolveEntirePool() As Boolean
-    Dim cestIdx As Long, rows() As Long, rowCount As Long
+    Dim cestIdx As Long
+    Dim resolvedAny As Boolean
+    Dim orderedCests() As Long
+    Dim i As Long
+
+    ResolveEntirePool = False
     If mPoolCestCount <= 0 Then Exit Function
-    For cestIdx = 1 To mPoolCestCount
-        rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
-        If rowCount > 1 Then
-            rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
-            If DEBUG_TXSFNCR Then Debug.Print "TryResolveCset: cestIdx=" & cestIdx & " rowCount=" & rowCount & " sourceSFN=" & mPoolCestSFN(cestIdx)
-            If TryResolveCset(rows, rowCount, mPoolCestSFN(cestIdx)) Then
+
+    orderedCests = GetOrderedCestIndexes()
+    For i = LBound(orderedCests) To UBound(orderedCests)
+        cestIdx = orderedCests(i)
+        If cestIdx > 0 Then
+            If ResolveOneCset(cestIdx) Then
+                resolvedAny = True
                 ResolveEntirePool = True
-                mPoolCountResolved = mPoolCountResolved + 1
-            Else
-                mUnresolvedAttemptCount = mUnresolvedAttemptCount + 1
+                Exit For
             End If
         End If
-    Next cestIdx
+    Next i
 End Function
 
-Private Function TryResolveCset(ByRef rows() As Long, ByVal rowCount As Long, ByVal sourceSFN As Long) As Boolean
-    Dim analysis As TCsetAnalysis: analysis = AnalyzeCsetSingleMoves(rows, rowCount)
-    TryResolveCset = (analysis.candidateCount > 0 And TryPlaceOneMovedRow_NoSourceRetest(analysis.candidateRows, analysis.candidateCount, sourceSFN))
+Private Function ResolveOneCset(ByVal cestIdx As Long) As Boolean
+    Dim rows() As Long, rowCount As Long
+    Dim changed As Boolean
+    Dim movedRowIdx As Long
+    Dim sourceSFN As Long
+
+    ResolveOneCset = False
+    If cestIdx < 1 Or cestIdx > mPoolCestCount Then Exit Function
+
+    rowCount = mPoolCestEndRows(cestIdx) - mPoolCestStartRows(cestIdx) + 1
+    If rowCount <= 1 Then Exit Function
+
+    rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
+    sourceSFN = mPoolCestSFN(cestIdx)
+    If DEBUG_TXSFNCR Then Debug.Print "TryResolveCset: cestIdx=" & cestIdx & " rowCount=" & rowCount & " sourceSFN=" & sourceSFN
+
+    changed = TryPlaceOneMovedRow_NoSourceRetest(rows, rowCount, sourceSFN, movedRowIdx)
+    If changed Then
+        ResolveOneCset = True
+        mPoolCountResolved = mPoolCountResolved + 1
+        If DEBUG_TXSFNCR Then Debug.Print "CSET resolved: cestIdx=" & cestIdx & " movedRowIdx=" & movedRowIdx & " newSFN=" & mCurrentSFN(movedRowIdx)
+        BuildPoolFromConflictStart movedRowIdx
+    Else
+        mUnresolvedAttemptCount = mUnresolvedAttemptCount + 1
+    End If
 End Function
 
-Private Function AnalyzeCsetSingleMoves(ByRef rows() As Long, ByVal rowCount As Long) As TCsetAnalysis
-    Dim a As TCsetAnalysis, i As Long
-    a.MovesRequired = IIf(rowCount > 1, rowCount - 1, 0): a.candidateCount = rowCount: ReDim a.candidateRows(1 To rowCount)
-    For i = 1 To rowCount: a.candidateRows(i) = rows(i): Next i
-    AnalyzeCsetSingleMoves = a
+Private Function GetOrderedCestIndexes() As Long()
+    Dim idxs() As Long
+    Dim used() As Boolean
+    Dim i As Long
+    Dim outPos As Long
+    Dim bestIdx As Long
+    Dim bestScore As Double
+    Dim score As Double
+    Dim haveBest As Boolean
+
+    If mPoolCestCount <= 0 Then
+        ReDim idxs(1 To 1)
+        idxs(1) = 0
+        GetOrderedCestIndexes = idxs
+        Exit Function
+    End If
+
+    ReDim idxs(1 To mPoolCestCount)
+    ReDim used(1 To mPoolCestCount)
+    outPos = 1
+
+    Do While outPos <= mPoolCestCount
+        haveBest = False
+        For i = 1 To mPoolCestCount
+            If Not used(i) Then
+                score = Abs(CDbl(mPoolCestSFN(i)) - mPoolCenter)
+                If (Not haveBest) Or (score < bestScore) Or (score = bestScore And mPoolCestSFN(i) < mPoolCestSFN(bestIdx)) Then
+                    haveBest = True
+                    bestIdx = i
+                    bestScore = score
+                End If
+            End If
+        Next i
+        idxs(outPos) = bestIdx
+        used(bestIdx) = True
+        outPos = outPos + 1
+    Loop
+
+    If DEBUG_TXSFNCR Then
+        Dim s As String
+        s = "CSET order: "
+        For i = LBound(idxs) To UBound(idxs)
+            s = s & idxs(i) & IIf(i < UBound(idxs), ",", "")
+        Next i
+        Debug.Print s & " | poolCenter=" & mPoolCenter
+    End If
+
+    GetOrderedCestIndexes = idxs
 End Function
 
-Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Long, ByVal candidateCount As Long, ByVal sourceSFN As Long) As Boolean
+Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Long, ByVal candidateCount As Long, ByVal sourceSFN As Long, ByRef movedRowIdx As Long) As Boolean
     Dim i As Long, rowIdx As Long, testSFN As Long, delta As Long
     Dim originalSFN As Long
     Dim maxDec As Long, maxInc As Long, maxDelta As Long
 
+    movedRowIdx = 0
     maxDec = GetNamedLong("maxTX_SFN_est_decrement")
     maxInc = GetNamedLong("maxTX_SFN_est_increment")
     maxDelta = IIf(maxDec > maxInc, maxDec, maxInc)
@@ -260,6 +334,7 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
                 If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
                     mCurrentSFN(rowIdx) = testSFN
                     If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                        movedRowIdx = rowIdx
                         If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
                         TryPlaceOneMovedRow_NoSourceRetest = True
                         Exit Function
@@ -274,6 +349,7 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
                 If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
                     mCurrentSFN(rowIdx) = testSFN
                     If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                        movedRowIdx = rowIdx
                         If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
                         TryPlaceOneMovedRow_NoSourceRetest = True
                         Exit Function
@@ -294,10 +370,6 @@ Private Function IsOneMovedRowPlacementLegal_NoSourceRetest(ByVal rowIdx As Long
         If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: testSFN equals sourceSFN rowIdx=" & rowIdx & " sfn=" & sourceSFN
         Exit Function
     End If
-    If Not IsMoveWithinRowBounds(rowIdx, testSFN) Then
-        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: row bounds rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN
-        Exit Function
-    End If
     If Not IsBitmapSFNAllowed(testSFN) Then
         If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: bitmap disallows testSFN=" & testSFN & " rowIdx=" & rowIdx
         Exit Function
@@ -312,7 +384,6 @@ Private Function IsOneMovedRowPlacementLegal_NoSourceRetest(ByVal rowIdx As Long
     End If
     IsOneMovedRowPlacementLegal_NoSourceRetest = True
 End Function
-
 
 Private Function TryForwardEscapeMove_NoSourceRetest(ByVal sourceSFN As Long, ByVal rowIdx As Long) As Boolean: TryForwardEscapeMove_NoSourceRetest = False: End Function
 Private Function ResolveTripleSplitDeterministic(ByRef rows() As Long, ByVal sourceSFN As Long) As Boolean
@@ -557,7 +628,6 @@ Private Function DoesMovedRowFormValidLocalGroup(ByVal movedRowIdx As Long) As B
     DoesMovedRowFormValidLocalGroup = True
 End Function
 
-
 Private Function GetMaxMoveOffset(ByVal sourceSFN As Long) As Long
     Dim lowerRoom As Long, bitmapLimit As Long, maxOffset As Long
     lowerRoom = sourceSFN
@@ -576,7 +646,6 @@ Private Function GetMaxMoveOffset(ByVal sourceSFN As Long) As Long
     
     GetMaxMoveOffset = maxOffset
 End Function
-
 
 Private Function GetRowMinRxTime(ByVal rowIdx As Long) As Double
     Dim st As Long, colIdx As Long, rxVal As Double, dataUB As Long
