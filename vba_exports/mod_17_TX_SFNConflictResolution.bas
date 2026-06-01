@@ -1,12 +1,13 @@
 Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-' Version: V1.0.3
-' V1.0.3 changes:
-'   - Fix CSet ordering runtime error 9 in inner-most selection
+' Version: V1.0.4
+' V1.0.4 changes:
+'   - Gate Debug.Print output on named range debug_logging = 1
+'   - Add Excel status-bar progress updates every 10,000 rows
 '   - Preserve pool-aware escape resolution behavior
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.3"
-Private Const DEBUG_TXSFNCR As Boolean = True
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.4"
+Private Const PROGRESS_STEP_ROWS As Long = 10000
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter_TXSFNCR Lib "kernel32" Alias "QueryPerformanceCounter" (ByRef lpPerformanceCount As Currency) As Long
@@ -80,6 +81,7 @@ Private mBuildPoolSeconds As Double
 Private mResolvePoolSeconds As Double
 Private mWritePoolSeconds As Double
 Private mFinalizeSeconds As Double
+Private mDebugLogging As Boolean
 
 Public Sub Run_TX_SFNConflictResolution()
     MsgBox "Run_TX_SFNConflictResolution is a wrapper. Call TX_SFNConflictResolution from PickExp.", vbInformation, "TX_SFN Conflict Resolution " & MODULE_VERSION_TXSFNCR
@@ -118,6 +120,7 @@ Public Sub TX_SFNConflictResolution( _
         WriteResolvedPoolToOutput
         If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
         mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
+        UpdateProgressBar conflictStart, "Resolving TX_SFN conflicts"
     Loop
 
     t0 = MicroTimer_TXSFNCR()
@@ -127,6 +130,7 @@ Public Sub TX_SFNConflictResolution( _
     FinalizeOutputVariant data
     mFinalizeSeconds = mFinalizeSeconds + (MicroTimer_TXSFNCR() - t0)
     elapsedSeconds = MicroTimer_TXSFNCR() - startTime
+    ClearProgressBar
 End Sub
 
 Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long, ByVal idxSFNCol As Long, ByVal idxTXID As Long, ByVal idxTXQ As Long, ByVal idxLEN As Long, ByVal idxTXperSFN As Long, ByVal idxRxCnt As Long, ByVal idxAvg As Long, ByVal idxTotLat As Long, ByVal idxGen As Long, ByRef rxDataColIdx() As Long, ByRef rxStationIDs() As Long, ByVal activeRxCount As Long, ByRef dictS2V As Object, ByRef dictVC As Object, ByRef dictA2P As Object, ByRef dictP2R As Object, ByRef dictP2Sigma As Object, ByVal txBitmap As String, ByVal bitmapLen As Long)
@@ -134,7 +138,29 @@ Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long
     mRxDataColIdx = rxDataColIdx: mRxStationIDs = rxStationIDs: mActiveRxCount = activeRxCount
     Set mDictS2V = dictS2V: Set mDictVC = dictVC: Set mDictA2P = dictA2P: Set mDictP2R = dictP2R: Set mDictP2Sigma = dictP2Sigma
     mTxBitmap = txBitmap: mBitmapLen = bitmapLen: mScanPos = 1: mOutputWritePos = 1: mPoolCount = 0: mPoolCestCount = 0
-    If DEBUG_TXSFNCR Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
+    mDebugLogging = IsDebugLoggingEnabled()
+    If mDebugLogging Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
+End Sub
+
+Private Function IsDebugLoggingEnabled() As Boolean
+    On Error Resume Next
+    IsDebugLoggingEnabled = (CLng(Evaluate(ThisWorkbook.Names("debug_logging").RefersTo)) = 1)
+    On Error GoTo 0
+End Function
+
+Private Sub DebugLog(ByVal msg As String)
+    If mDebugLogging Then Debug.Print msg
+End Sub
+
+Private Sub UpdateProgressBar(ByVal processedRows As Long, ByVal statusText As String)
+    If processedRows <= 0 Then Exit Sub
+    If (processedRows Mod PROGRESS_STEP_ROWS) <> 0 Then Exit Sub
+    Application.StatusBar = statusText & " - processed row " & processedRows & " of " & mFilteredCount
+    DoEvents
+End Sub
+
+Private Sub ClearProgressBar()
+    Application.StatusBar = False
 End Sub
 
 Private Function ValidateInputMonotoneTXSFN() As Boolean
@@ -172,6 +198,7 @@ Private Function FindNextConflictStart() As Long
     Dim r As Long
     For r = mScanPos To mFilteredCount - 1
         If mCurrentSFN(r) = mCurrentSFN(r + 1) Then FindNextConflictStart = r: Exit Function
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Scanning for TX_SFN conflicts"
     Next r
 End Function
 
@@ -185,7 +212,7 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     ReDim mPoolRows(1 To mPoolCount)
     For i = 1 To mPoolCount: mPoolRows(i) = leftRow + i - 1: Next i
     mPoolMinSFN = mCurrentSFN(leftRow): mPoolMaxSFN = mCurrentSFN(rightRow): mPoolCenter = (mPoolMinSFN + mPoolMaxSFN) / 2#: If mPoolCount > mMaxObservedPoolSize Then mMaxObservedPoolSize = mPoolCount
-    If DEBUG_TXSFNCR Then Debug.Print "POOL built: startRow=" & startRow & " leftRow=" & leftRow & " rightRow=" & rightRow & " poolCount=" & mPoolCount & " minSFN=" & mPoolMinSFN & " maxSFN=" & mPoolMaxSFN
+    DebugLog "POOL built: startRow=" & startRow & " leftRow=" & leftRow & " rightRow=" & rightRow & " poolCount=" & mPoolCount & " minSFN=" & mPoolMinSFN & " maxSFN=" & mPoolMaxSFN
     BuildPoolCests
 End Sub
 
@@ -203,7 +230,7 @@ Private Sub BuildPoolCests()
             i = i + 1
         Loop
         mPoolCestCount = mPoolCestCount + 1: mPoolCestStartRows(mPoolCestCount) = startIdx: mPoolCestEndRows(mPoolCestCount) = i: mPoolCestSFN(mPoolCestCount) = curSFN
-        If DEBUG_TXSFNCR Then Debug.Print "CEST chunk: idx=" & mPoolCestCount & " rows=" & startIdx & ".." & i & " sfn=" & curSFN & " count=" & (i - startIdx + 1)
+        DebugLog "CEST chunk: idx=" & mPoolCestCount & " rows=" & startIdx & ".." & i & " sfn=" & curSFN & " count=" & (i - startIdx + 1)
         i = i + 1
     Loop
 End Sub
@@ -239,13 +266,13 @@ Private Function ResolveOneCset(ByVal cestIdx As Long) As Boolean
 
     rows = ExtractPoolRows(mPoolCestStartRows(cestIdx), mPoolCestEndRows(cestIdx))
     sourceSFN = mPoolCestSFN(cestIdx)
-    If DEBUG_TXSFNCR Then Debug.Print "TryResolveCset: cestIdx=" & cestIdx & " rowCount=" & rowCount & " sourceSFN=" & sourceSFN
+    DebugLog "TryResolveCset: cestIdx=" & cestIdx & " rowCount=" & rowCount & " sourceSFN=" & sourceSFN
 
     changed = TryPlaceOneMovedRow_NoSourceRetest(rows, rowCount, sourceSFN, movedRowIdx)
     If changed Then
         ResolveOneCset = True
         mPoolCountResolved = mPoolCountResolved + 1
-        If DEBUG_TXSFNCR Then Debug.Print "CSET resolved: cestIdx=" & cestIdx & " movedRowIdx=" & movedRowIdx & " newSFN=" & mCurrentSFN(movedRowIdx)
+        DebugLog "CSET resolved: cestIdx=" & cestIdx & " movedRowIdx=" & movedRowIdx & " newSFN=" & mCurrentSFN(movedRowIdx)
         BuildPoolFromConflictStart movedRowIdx
     Else
         mUnresolvedAttemptCount = mUnresolvedAttemptCount + 1
@@ -300,16 +327,17 @@ Private Function GetOrderedCestIndexes() As Long()
         outPos = outPos + 1
     Loop
 
-    If DEBUG_TXSFNCR Then
-        Dim s As String
-        s = "CSET order: "
-        For i = LBound(idxs) To UBound(idxs)
-            s = s & idxs(i) & IIf(i < UBound(idxs), ",", "")
-        Next i
-        Debug.Print s & " | poolCenter=" & mPoolCenter
-    End If
-
+    DebugLog "CSET order: " & JoinLongArray(idxs) & " | poolCenter=" & mPoolCenter
     GetOrderedCestIndexes = idxs
+End Function
+
+Private Function JoinLongArray(ByRef arr() As Long) As String
+    Dim i As Long, s As String
+    For i = LBound(arr) To UBound(arr)
+        If LenB(s) > 0 Then s = s & ","
+        s = s & CStr(arr(i))
+    Next i
+    JoinLongArray = s
 End Function
 
 Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Long, ByVal candidateCount As Long, ByVal sourceSFN As Long, ByRef movedRowIdx As Long) As Boolean
@@ -322,7 +350,7 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
     maxInc = GetNamedLong("maxTX_SFN_est_increment")
     maxDelta = IIf(maxDec > maxInc, maxDec, maxInc)
 
-    If DEBUG_TXSFNCR Then Debug.Print "MOVE RANGE: sourceSFN=" & sourceSFN & " maxDec=" & maxDec & " maxInc=" & maxInc & " maxDelta=" & maxDelta
+    DebugLog "MOVE RANGE: sourceSFN=" & sourceSFN & " maxDec=" & maxDec & " maxInc=" & maxInc & " maxDelta=" & maxDelta
 
     If maxDelta <= 0 Then Exit Function
 
@@ -333,12 +361,12 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
         For delta = 1 To maxDelta
             If delta <= maxDec Then
                 testSFN = sourceSFN - delta
-                If DEBUG_TXSFNCR Then Debug.Print "TEST MOVE: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " delta=" & delta & " testSFN=" & testSFN & " dir=-"
+                DebugLog "TEST MOVE: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " delta=" & delta & " testSFN=" & testSFN & " dir=-"
                 If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
                     mCurrentSFN(rowIdx) = testSFN
                     If DoesMovedRowFormValidLocalGroup(rowIdx) Then
                         movedRowIdx = rowIdx
-                        If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
+                        DebugLog "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
                         TryPlaceOneMovedRow_NoSourceRetest = True
                         Exit Function
                     End If
@@ -348,12 +376,12 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
 
             If delta <= maxInc Then
                 testSFN = sourceSFN + delta
-                If DEBUG_TXSFNCR Then Debug.Print "TEST MOVE: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " delta=" & delta & " testSFN=" & testSFN & " dir=+"
+                DebugLog "TEST MOVE: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " delta=" & delta & " testSFN=" & testSFN & " dir=+"
                 If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
                     mCurrentSFN(rowIdx) = testSFN
                     If DoesMovedRowFormValidLocalGroup(rowIdx) Then
                         movedRowIdx = rowIdx
-                        If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
+                        DebugLog "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
                         TryPlaceOneMovedRow_NoSourceRetest = True
                         Exit Function
                     End If
@@ -366,23 +394,23 @@ End Function
 
 Private Function IsOneMovedRowPlacementLegal_NoSourceRetest(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean
     If rowIdx < 1 Or rowIdx > mFilteredCount Then
-        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: rowIdx out of range rowIdx=" & rowIdx
+        DebugLog "REJECT legal-check: rowIdx out of range rowIdx=" & rowIdx
         Exit Function
     End If
     If testSFN = sourceSFN Then
-        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: testSFN equals sourceSFN rowIdx=" & rowIdx & " sfn=" & sourceSFN
+        DebugLog "REJECT legal-check: testSFN equals sourceSFN rowIdx=" & rowIdx & " sfn=" & sourceSFN
         Exit Function
     End If
     If Not IsBitmapSFNAllowed(testSFN) Then
-        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: bitmap disallows testSFN=" & testSFN & " rowIdx=" & rowIdx
+        DebugLog "REJECT legal-check: bitmap disallows testSFN=" & testSFN & " rowIdx=" & rowIdx
         Exit Function
     End If
     If Not EvaluatePoolBucketExcludingRow(sourceSFN, rowIdx) Then
-        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: excluding-source bucket invalid sourceSFN=" & sourceSFN & " rowIdx=" & rowIdx
+        DebugLog "REJECT legal-check: excluding-source bucket invalid sourceSFN=" & sourceSFN & " rowIdx=" & rowIdx
         Exit Function
     End If
     If Not EvaluatePoolBucketWithAddedRow(testSFN, rowIdx) Then
-        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: added-row bucket invalid testSFN=" & testSFN & " rowIdx=" & rowIdx
+        DebugLog "REJECT legal-check: added-row bucket invalid testSFN=" & testSFN & " rowIdx=" & rowIdx
         Exit Function
     End If
     IsOneMovedRowPlacementLegal_NoSourceRetest = True
@@ -447,6 +475,7 @@ Private Sub WriteUnwrittenRowsToOutput()
     Dim r As Long
     For r = 1 To mFilteredCount
         If Not mWritten(r) Then CopyRowToOutput r: mWritten(r) = True
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Writing resolved rows"
     Next r
 End Sub
 
@@ -486,6 +515,7 @@ Private Sub ValidateResolvedRXTimingOnly()
         If rxMin <> NO_RX_TIME Then
             If CDbl(mCurrentSFN(r)) > rxMin Then mRemainingViolations = mRemainingViolations + 1
         End If
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Validating resolved rows"
     Next r
 End Sub
 
@@ -624,7 +654,7 @@ Private Function DoesMovedRowFormValidLocalGroup(ByVal movedRowIdx As Long) As B
     movedSFN = mCurrentSFN(movedRowIdx)
 
     If Not EvaluatePoolBucketWithAddedRow(movedSFN, movedRowIdx) Then
-        If DEBUG_TXSFNCR Then Debug.Print "REJECT local-group: moved bucket invalid movedRowIdx=" & movedRowIdx & " movedSFN=" & movedSFN
+        DebugLog "REJECT local-group: moved bucket invalid movedRowIdx=" & movedRowIdx & " movedSFN=" & movedSFN
         Exit Function
     End If
 
@@ -640,12 +670,10 @@ Private Function GetMaxMoveOffset(ByVal sourceSFN As Long) As Long
     If lowerRoom < maxOffset Then maxOffset = lowerRoom
     If maxOffset < 1 Then maxOffset = 1
     
-    If DEBUG_TXSFNCR Then
-        Debug.Print "GetMaxMoveOffset: sourceSFN=" & sourceSFN & _
+    DebugLog "GetMaxMoveOffset: sourceSFN=" & sourceSFN & _
                     " lowerRoom=" & lowerRoom & _
                     " bitmapLimit=" & bitmapLimit & _
                     " maxOffset=" & maxOffset
-    End If
     
     GetMaxMoveOffset = maxOffset
 End Function
@@ -698,4 +726,13 @@ Private Function GetNamedLong(ByVal nameText As String) As Long
     On Error Resume Next
     GetNamedLong = CLng(Evaluate(ThisWorkbook.Names(nameText).RefersTo))
     On Error GoTo 0
+End Function
+
+Private Function JoinLongArray(ByRef arr() As Long) As String
+    Dim i As Long, s As String
+    For i = LBound(arr) To UBound(arr)
+        If LenB(s) > 0 Then s = s & ","
+        s = s & CStr(arr(i))
+    Next i
+    JoinLongArray = s
 End Function
