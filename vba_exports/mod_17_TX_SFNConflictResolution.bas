@@ -474,7 +474,6 @@ End Function
 
 Private Function CollectContiguousRowsAroundAnchor(ByVal anchorRow As Long, ByVal excludeRowIdx As Long, ByVal includeRowIdx As Long, ByRef rowCount As Long) As Long()
     Dim rows() As Long, leftRow As Long, rightRow As Long, curSFN As Long, r As Long, n As Long
-    Dim includeAlreadyPresent As Boolean
     rowCount = 0
     If anchorRow < 1 Or anchorRow > mFilteredCount Then
         ReDim rows(1 To 1)
@@ -505,14 +504,7 @@ Private Function CollectContiguousRowsAroundAnchor(ByVal anchorRow As Long, ByVa
     Next r
 
     If includeRowIdx > 0 And includeRowIdx <> excludeRowIdx Then
-        includeAlreadyPresent = False
-        For r = 1 To rowCount
-            If rows(r) = includeRowIdx Then
-                includeAlreadyPresent = True
-                Exit For
-            End If
-        Next r
-        If Not includeAlreadyPresent Then
+        If includeRowIdx < leftRow Or includeRowIdx > rightRow Then
             rowCount = rowCount + 1
             If rowCount > UBound(rows) Then ReDim Preserve rows(1 To rowCount)
             rows(rowCount) = includeRowIdx
