@@ -89,17 +89,24 @@ Public Sub TX_SFNConflictResolution( _
     ByRef rxStationIDs() As Long, ByVal activeRxCount As Long, ByRef dictS2V As Object, ByRef dictVC As Object, _
     ByRef dictA2P As Object, ByRef dictP2R As Object, ByRef dictP2Sigma As Object, ByVal txBitmap As String, _
     ByVal bitmapLen As Long, ByRef elapsedSeconds As Double)
-
+    
     Dim startTime As Double: startTime = MicroTimer_TXSFNCR()
     Dim t0 As Double
     Dim conflictStart As Long
     Dim poolMoved As Boolean
-
+    
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
+
     If Not ValidateInputMonotoneTXSFN() Then Exit Sub
     PrepareRowDerivedData
     InitializeOutputBuffer
+    mTxBitmap = txBitmap
 
+    If Not IsAllOnesBitmap(mTxBitmap) Then
+        MsgBox "TX_SFN Conflict Resolution skipped: TX bitmap is not all ones.", vbInformation, "TX_SFN Conflict Resolution"
+        Exit Sub
+    End If
+    
     Do
         t0 = MicroTimer_TXSFNCR()
         conflictStart = FindNextConflictStart()
@@ -231,46 +238,81 @@ End Function
 
 Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Long, ByVal candidateCount As Long, ByVal sourceSFN As Long) As Boolean
     Dim i As Long, rowIdx As Long, testSFN As Long, delta As Long
-    Dim originalSFN As Long, maxOffset As Long
-    maxOffset = GetMaxMoveOffset(sourceSFN)
-    If maxOffset <= 0 Then Exit Function
+    Dim originalSFN As Long
+    Dim maxDec As Long, maxInc As Long, maxDelta As Long
+
+    maxDec = GetNamedLong("maxTX_SFN_est_decrement")
+    maxInc = GetNamedLong("maxTX_SFN_est_increment")
+    maxDelta = IIf(maxDec > maxInc, maxDec, maxInc)
+
+    If DEBUG_TXSFNCR Then Debug.Print "MOVE RANGE: sourceSFN=" & sourceSFN & " maxDec=" & maxDec & " maxInc=" & maxInc & " maxDelta=" & maxDelta
+
+    If maxDelta <= 0 Then Exit Function
+
     For i = 1 To candidateCount
-        rowIdx = candidateRows(i): originalSFN = mCurrentSFN(rowIdx)
-        For delta = 1 To maxOffset
-            testSFN = sourceSFN - delta
-            If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
-                mCurrentSFN(rowIdx) = testSFN
-                If DoesMovedRowFormValidLocalGroup(rowIdx) Then
-                    If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
-                    TryPlaceOneMovedRow_NoSourceRetest = True
-                    Exit Function
+        rowIdx = candidateRows(i)
+        originalSFN = mCurrentSFN(rowIdx)
+
+        For delta = 1 To maxDelta
+            If delta <= maxDec Then
+                testSFN = sourceSFN - delta
+                If DEBUG_TXSFNCR Then Debug.Print "TEST MOVE: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " delta=" & delta & " testSFN=" & testSFN & " dir=-"
+                If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
+                    mCurrentSFN(rowIdx) = testSFN
+                    If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                        If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
+                        TryPlaceOneMovedRow_NoSourceRetest = True
+                        Exit Function
+                    End If
+                    mCurrentSFN(rowIdx) = originalSFN
                 End If
-                mCurrentSFN(rowIdx) = originalSFN
             End If
 
-            testSFN = sourceSFN + delta
-            If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
-                mCurrentSFN(rowIdx) = testSFN
-                If DoesMovedRowFormValidLocalGroup(rowIdx) Then
-                    If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
-                    TryPlaceOneMovedRow_NoSourceRetest = True
-                    Exit Function
+            If delta <= maxInc Then
+                testSFN = sourceSFN + delta
+                If DEBUG_TXSFNCR Then Debug.Print "TEST MOVE: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " delta=" & delta & " testSFN=" & testSFN & " dir=+"
+                If IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN) Then
+                    mCurrentSFN(rowIdx) = testSFN
+                    If DoesMovedRowFormValidLocalGroup(rowIdx) Then
+                        If DEBUG_TXSFNCR Then Debug.Print "ACCEPT move: rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN & " minRx=" & mRowMinRxTime(rowIdx) & " txID=" & mRowTXID(rowIdx)
+                        TryPlaceOneMovedRow_NoSourceRetest = True
+                        Exit Function
+                    End If
+                    mCurrentSFN(rowIdx) = originalSFN
                 End If
-                mCurrentSFN(rowIdx) = originalSFN
             End If
         Next delta
     Next i
 End Function
 
 Private Function IsOneMovedRowPlacementLegal_NoSourceRetest(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean
-    If rowIdx < 1 Or rowIdx > mFilteredCount Then Exit Function
-    If testSFN = sourceSFN Then Exit Function
-    If Not IsMoveWithinRowBounds(rowIdx, testSFN) Then Exit Function
-    If Not IsBitmapSFNAllowed(testSFN) Then Exit Function
-    If Not EvaluatePoolBucketExcludingRow(sourceSFN, rowIdx) Then Exit Function
-    If Not EvaluatePoolBucketWithAddedRow(testSFN, rowIdx) Then Exit Function
+    If rowIdx < 1 Or rowIdx > mFilteredCount Then
+        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: rowIdx out of range rowIdx=" & rowIdx
+        Exit Function
+    End If
+    If testSFN = sourceSFN Then
+        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: testSFN equals sourceSFN rowIdx=" & rowIdx & " sfn=" & sourceSFN
+        Exit Function
+    End If
+    If Not IsMoveWithinRowBounds(rowIdx, testSFN) Then
+        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: row bounds rowIdx=" & rowIdx & " sourceSFN=" & sourceSFN & " testSFN=" & testSFN
+        Exit Function
+    End If
+    If Not IsBitmapSFNAllowed(testSFN) Then
+        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: bitmap disallows testSFN=" & testSFN & " rowIdx=" & rowIdx
+        Exit Function
+    End If
+    If Not EvaluatePoolBucketExcludingRow(sourceSFN, rowIdx) Then
+        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: excluding-source bucket invalid sourceSFN=" & sourceSFN & " rowIdx=" & rowIdx
+        Exit Function
+    End If
+    If Not EvaluatePoolBucketWithAddedRow(testSFN, rowIdx) Then
+        If DEBUG_TXSFNCR Then Debug.Print "REJECT legal-check: added-row bucket invalid testSFN=" & testSFN & " rowIdx=" & rowIdx
+        Exit Function
+    End If
     IsOneMovedRowPlacementLegal_NoSourceRetest = True
 End Function
+
 
 Private Function TryForwardEscapeMove_NoSourceRetest(ByVal sourceSFN As Long, ByVal rowIdx As Long) As Boolean: TryForwardEscapeMove_NoSourceRetest = False: End Function
 Private Function ResolveTripleSplitDeterministic(ByRef rows() As Long, ByVal sourceSFN As Long) As Boolean
@@ -335,20 +377,31 @@ Private Sub WriteUnwrittenRowsToOutput()
 End Sub
 
 Private Sub RecomputeFinalTXperSFN()
-    Dim r As Long, prevSFN As Long, txPer As Long
+    Dim r As Long, startR As Long, endR As Long
+    Dim curSFN As Long, runLen As Long
+    Dim i As Long
+
     If mFilteredCount <= 0 Then Exit Sub
-    prevSFN = mCurrentSFN(1): txPer = 1
-    For r = 1 To mFilteredCount
-        If r = 1 Then
-            txPer = 1
-        ElseIf mCurrentSFN(r) = prevSFN Then
-            txPer = txPer + 1
-        Else
-            txPer = 1
-            prevSFN = mCurrentSFN(r)
+
+    r = 1
+    Do While r <= mFilteredCount
+        curSFN = mCurrentSFN(r)
+        startR = r
+
+        Do While r <= mFilteredCount
+            If mCurrentSFN(r) <> curSFN Then Exit Do
+            r = r + 1
+        Loop
+
+        endR = r - 1
+        runLen = endR - startR + 1
+
+        If mIdxTXperSFN > 0 Then
+            For i = startR To endR
+                mOutputData(i, mIdxTXperSFN) = runLen
+            Next i
         End If
-        If mIdxTXperSFN > 0 Then mOutputData(r, mIdxTXperSFN) = txPer
-    Next r
+    Loop
 End Sub
 
 Private Sub ValidateResolvedRXTimingOnly()
@@ -380,7 +433,13 @@ Private Sub UpdateStatusBar(): Application.StatusBar = "TX_SFN conflict resoluti
 Private Sub AddDiag(ByVal eventType As String, ByVal v1 As String, ByVal v2 As String, ByVal v3 As String, ByVal v4 As String, ByVal msg As String): End Sub
 Private Sub HistAddLong(ByRef dictObj As Object, ByVal keyVal As Long): End Sub
 Private Sub DumpHistogram(ByVal ws As Worksheet, ByVal startRow As Long, ByVal startCol As Long, ByVal titleText As String, ByRef dictObj As Object): End Sub
-Private Function SafeDiv(ByVal numerator As Double, ByVal denominator As Double) As Double: If denominator = 0# Then SafeDiv = 0# Else SafeDiv = numerator / denominator: End If: End Function
+Private Function SafeDiv(ByVal numerator As Double, ByVal denominator As Double) As Double
+    If denominator = 0# Then
+        SafeDiv = 0#
+    Else
+        SafeDiv = numerator / denominator
+    End If
+End Function
 Private Sub WriteDiagnosticLog_TXSFNCR(ByVal totalRows As Long, ByVal calcTime As Double): End Sub
 Private Function MicroTimer_TXSFNCR() As Double
     Dim cyTicks As Currency, cyFreq As Currency
@@ -489,9 +548,15 @@ End Function
 Private Function DoesMovedRowFormValidLocalGroup(ByVal movedRowIdx As Long) As Boolean
     Dim movedSFN As Long
     movedSFN = mCurrentSFN(movedRowIdx)
-    If Not EvaluatePoolBucketWithAddedRow(movedSFN, movedRowIdx) Then Exit Function
+
+    If Not EvaluatePoolBucketWithAddedRow(movedSFN, movedRowIdx) Then
+        If DEBUG_TXSFNCR Then Debug.Print "REJECT local-group: moved bucket invalid movedRowIdx=" & movedRowIdx & " movedSFN=" & movedSFN
+        Exit Function
+    End If
+
     DoesMovedRowFormValidLocalGroup = True
 End Function
+
 
 Private Function GetMaxMoveOffset(ByVal sourceSFN As Long) As Long
     Dim lowerRoom As Long, bitmapLimit As Long, maxOffset As Long
@@ -501,8 +566,17 @@ Private Function GetMaxMoveOffset(ByVal sourceSFN As Long) As Long
     maxOffset = bitmapLimit
     If lowerRoom < maxOffset Then maxOffset = lowerRoom
     If maxOffset < 1 Then maxOffset = 1
+    
+    If DEBUG_TXSFNCR Then
+        Debug.Print "GetMaxMoveOffset: sourceSFN=" & sourceSFN & _
+                    " lowerRoom=" & lowerRoom & _
+                    " bitmapLimit=" & bitmapLimit & _
+                    " maxOffset=" & maxOffset
+    End If
+    
     GetMaxMoveOffset = maxOffset
 End Function
+
 
 Private Function GetRowMinRxTime(ByVal rowIdx As Long) As Double
     Dim st As Long, colIdx As Long, rxVal As Double, dataUB As Long
@@ -536,5 +610,20 @@ Private Function SafeLongArrayUBound(ByRef arr() As Long) As Long
         SafeLongArrayUBound = 0
         Err.Clear
     End If
+    On Error GoTo 0
+End Function
+
+Private Function IsAllOnesBitmap(ByVal txBitmap As String) As Boolean
+    Dim i As Long
+    If Len(txBitmap) = 0 Then Exit Function
+    For i = 1 To Len(txBitmap)
+        If Mid$(txBitmap, i, 1) <> "1" Then Exit Function
+    Next i
+    IsAllOnesBitmap = True
+End Function
+
+Private Function GetNamedLong(ByVal nameText As String) As Long
+    On Error Resume Next
+    GetNamedLong = CLng(Evaluate(ThisWorkbook.Names(nameText).RefersTo))
     On Error GoTo 0
 End Function
