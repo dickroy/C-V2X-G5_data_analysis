@@ -1,12 +1,13 @@
 Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-' Version: V1.0.4
-' V1.0.4 changes:
-'   - Gate Debug.Print output on named range debug_logging = 1
-'   - Add Excel status-bar progress updates every 10,000 rows
-'   - Preserve pool-aware escape resolution behavior
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.4"
+' Version: V1.1.0
+' V1.1.0 changes:
+'   - Replace full-table SFN bucket scans with contiguous group expansion
+'   - Cache config names once per run
+'   - Gate debug output on debug_logging = 1
+'   - Add Excel progress updates every 10,000 rows
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.1.0"
 Private Const PROGRESS_STEP_ROWS As Long = 10000
 
 #If VBA7 Then
@@ -82,6 +83,8 @@ Private mResolvePoolSeconds As Double
 Private mWritePoolSeconds As Double
 Private mFinalizeSeconds As Double
 Private mDebugLogging As Boolean
+Private mMaxTXDecrement As Long
+Private mMaxTXIncrement As Long
 
 Public Sub Run_TX_SFNConflictResolution()
     MsgBox "Run_TX_SFNConflictResolution is a wrapper. Call TX_SFNConflictResolution from PickExp.", vbInformation, "TX_SFN Conflict Resolution " & MODULE_VERSION_TXSFNCR
@@ -98,17 +101,21 @@ Public Sub TX_SFNConflictResolution( _
     Dim startTime As Double: startTime = MicroTimer_TXSFNCR()
     Dim t0 As Double
     Dim conflictStart As Long
+    Dim oldStatusBar As Variant
     
+    oldStatusBar = Application.StatusBar
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
 
-    If Not ValidateInputMonotoneTXSFN() Then Exit Sub
+    If Not ValidateInputMonotoneTXSFN() Then GoTo CleanExit
     PrepareRowDerivedData
     InitializeOutputBuffer
     mTxBitmap = txBitmap
+    mMaxTXDecrement = GetNamedLong("maxTX_SFN_est_decrement")
+    mMaxTXIncrement = GetNamedLong("maxTX_SFN_est_increment")
 
     If Not IsAllOnesBitmap(mTxBitmap) Then
         MsgBox "TX_SFN Conflict Resolution skipped: TX bitmap is not all ones.", vbInformation, "TX_SFN Conflict Resolution"
-        Exit Sub
+        GoTo CleanExit
     End If
     
     Do
@@ -130,6 +137,9 @@ Public Sub TX_SFNConflictResolution( _
     FinalizeOutputVariant data
     mFinalizeSeconds = mFinalizeSeconds + (MicroTimer_TXSFNCR() - t0)
     elapsedSeconds = MicroTimer_TXSFNCR() - startTime
+
+CleanExit:
+    Application.StatusBar = oldStatusBar
     ClearProgressBar
 End Sub
 
@@ -346,9 +356,13 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
     Dim maxDec As Long, maxInc As Long, maxDelta As Long
 
     movedRowIdx = 0
-    maxDec = GetNamedLong("maxTX_SFN_est_decrement")
-    maxInc = GetNamedLong("maxTX_SFN_est_increment")
-    maxDelta = IIf(maxDec > maxInc, maxDec, maxInc)
+    maxDec = mMaxTXDecrement
+    maxInc = mMaxTXIncrement
+    If maxDec > maxInc Then
+        maxDelta = maxDec
+    Else
+        maxDelta = maxInc
+    End If
 
     DebugLog "MOVE RANGE: sourceSFN=" & sourceSFN & " maxDec=" & maxDec & " maxInc=" & maxInc & " maxDelta=" & maxDelta
 
@@ -405,11 +419,11 @@ Private Function IsOneMovedRowPlacementLegal_NoSourceRetest(ByVal rowIdx As Long
         DebugLog "REJECT legal-check: bitmap disallows testSFN=" & testSFN & " rowIdx=" & rowIdx
         Exit Function
     End If
-    If Not EvaluatePoolBucketExcludingRow(sourceSFN, rowIdx) Then
+    If Not EvaluateContiguousGroupExcludingRow(rowIdx) Then
         DebugLog "REJECT legal-check: excluding-source bucket invalid sourceSFN=" & sourceSFN & " rowIdx=" & rowIdx
         Exit Function
     End If
-    If Not EvaluatePoolBucketWithAddedRow(testSFN, rowIdx) Then
+    If Not EvaluateContiguousGroupWithAddedRow(testSFN, rowIdx) Then
         DebugLog "REJECT legal-check: added-row bucket invalid testSFN=" & testSFN & " rowIdx=" & rowIdx
         Exit Function
     End If
@@ -426,16 +440,88 @@ Private Function ResolveTripleSplitDeterministic(ByRef rows() As Long, ByVal sou
 End Function
 Private Function IsPoolForcedSplitFirstMoveLegal(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean: IsPoolForcedSplitFirstMoveLegal = IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN): End Function
 Private Function IsPoolSingleRowPlacementLegal(ByVal rowIdx As Long, ByVal sourceSFN As Long, ByVal testSFN As Long) As Boolean: IsPoolSingleRowPlacementLegal = IsOneMovedRowPlacementLegal_NoSourceRetest(rowIdx, sourceSFN, testSFN): End Function
-Private Function EvaluatePoolBucketExcludingRow(ByVal sfnVal As Long, ByVal excludeRowIdx As Long) As Boolean
-    Dim rows() As Long, rowCount As Long
-    rows = CollectRowsForSFN(sfnVal, excludeRowIdx, -1, rowCount)
-    EvaluatePoolBucketExcludingRow = ValidateBucketRows(rows, rowCount)
+
+Private Function EvaluateContiguousGroupExcludingRow(ByVal excludeRowIdx As Long) As Boolean
+    Dim anchorRow As Long, rows() As Long, rowCount As Long
+    anchorRow = FindAnyContiguousAnchorRow(mCurrentSFN(excludeRowIdx), excludeRowIdx)
+    If anchorRow <= 0 Then
+        EvaluateContiguousGroupExcludingRow = True
+        Exit Function
+    End If
+    rows = CollectContiguousRowsAroundAnchor(anchorRow, excludeRowIdx, -1, rowCount)
+    EvaluateContiguousGroupExcludingRow = ValidateBucketRows(rows, rowCount)
 End Function
-Private Function EvaluatePoolBucketWithAddedRow(ByVal sfnVal As Long, ByVal addedRowIdx As Long) As Boolean
-    Dim rows() As Long, rowCount As Long
-    rows = CollectRowsForSFN(sfnVal, -1, addedRowIdx, rowCount)
-    EvaluatePoolBucketWithAddedRow = ValidateBucketRows(rows, rowCount)
+
+Private Function EvaluateContiguousGroupWithAddedRow(ByVal sfnVal As Long, ByVal addedRowIdx As Long) As Boolean
+    Dim anchorRow As Long, rows() As Long, rowCount As Long
+    anchorRow = FindAnyContiguousAnchorRow(sfnVal, addedRowIdx)
+    If anchorRow <= 0 Then anchorRow = addedRowIdx
+    rows = CollectContiguousRowsAroundAnchor(anchorRow, -1, addedRowIdx, rowCount)
+    EvaluateContiguousGroupWithAddedRow = ValidateBucketRows(rows, rowCount)
 End Function
+
+Private Function FindAnyContiguousAnchorRow(ByVal sfnVal As Long, ByVal skipRowIdx As Long) As Long
+    Dim r As Long
+    For r = 1 To mFilteredCount
+        If r <> skipRowIdx Then
+            If mCurrentSFN(r) = sfnVal Then
+                FindAnyContiguousAnchorRow = r
+                Exit Function
+            End If
+        End If
+    Next r
+End Function
+
+Private Function CollectContiguousRowsAroundAnchor(ByVal anchorRow As Long, ByVal excludeRowIdx As Long, ByVal includeRowIdx As Long, ByRef rowCount As Long) As Long()
+    Dim rows() As Long, leftRow As Long, rightRow As Long, curSFN As Long, r As Long, n As Long
+    rowCount = 0
+    If anchorRow < 1 Or anchorRow > mFilteredCount Then
+        ReDim rows(1 To 1)
+        CollectContiguousRowsAroundAnchor = rows
+        Exit Function
+    End If
+
+    curSFN = mCurrentSFN(anchorRow)
+    leftRow = anchorRow
+    Do While leftRow > 1
+        If mCurrentSFN(leftRow - 1) <> curSFN Then Exit Do
+        leftRow = leftRow - 1
+    Loop
+
+    rightRow = anchorRow
+    Do While rightRow < mFilteredCount
+        If mCurrentSFN(rightRow + 1) <> curSFN Then Exit Do
+        rightRow = rightRow + 1
+    Loop
+
+    n = rightRow - leftRow + 1
+    ReDim rows(1 To n)
+    For r = leftRow To rightRow
+        If r <> excludeRowIdx Then
+            rowCount = rowCount + 1
+            rows(rowCount) = r
+        End If
+    Next r
+
+    If includeRowIdx >= leftRow And includeRowIdx <= rightRow Then
+        If includeRowIdx <> excludeRowIdx Then
+            If includeRowIdx < leftRow Or includeRowIdx > rightRow Then
+                rowCount = rowCount + 1
+                If rowCount > UBound(rows) Then ReDim Preserve rows(1 To rowCount)
+                rows(rowCount) = includeRowIdx
+            End If
+        End If
+    End If
+
+    If rowCount = 0 Then
+        ReDim rows(1 To 1)
+    ElseIf rowCount < n Then
+        ReDim Preserve rows(1 To rowCount)
+    End If
+
+    CollectContiguousRowsAroundAnchor = rows
+End Function
+
 Private Function IsMoveWithinRowBounds(ByVal rowIdx As Long, ByVal testSFN As Long) As Boolean
     Dim prevSFN As Long, nextSFN As Long
     If rowIdx < 1 Or rowIdx > mFilteredCount Then Exit Function
@@ -564,26 +650,6 @@ Private Function ExtractPoolRows(ByVal startIdx As Long, ByVal endIdx As Long) A
     ExtractPoolRows = rows
 End Function
 
-Private Function CollectRowsForSFN(ByVal sfnVal As Long, ByVal excludeRowIdx As Long, ByVal includeRowIdx As Long, ByRef rowCount As Long) As Long()
-    Dim rows() As Long, r As Long
-    ReDim rows(1 To mFilteredCount)
-    rowCount = 0
-    For r = 1 To mFilteredCount
-        If r <> excludeRowIdx Then
-            If mCurrentSFN(r) = sfnVal Or r = includeRowIdx Then
-                rowCount = rowCount + 1
-                rows(rowCount) = r
-            End If
-        End If
-    Next r
-    If rowCount = 0 Then
-        ReDim rows(1 To 1)
-    ElseIf rowCount < mFilteredCount Then
-        ReDim Preserve rows(1 To rowCount)
-    End If
-    CollectRowsForSFN = rows
-End Function
-
 Private Function ValidateBucketRows(ByRef rows() As Long, ByVal rowCount As Long) As Boolean
     If rowCount <= 1 Then
         ValidateBucketRows = True
@@ -653,7 +719,7 @@ Private Function DoesMovedRowFormValidLocalGroup(ByVal movedRowIdx As Long) As B
     Dim movedSFN As Long
     movedSFN = mCurrentSFN(movedRowIdx)
 
-    If Not EvaluatePoolBucketWithAddedRow(movedSFN, movedRowIdx) Then
+    If Not EvaluateContiguousGroupWithAddedRow(movedSFN, movedRowIdx) Then
         DebugLog "REJECT local-group: moved bucket invalid movedRowIdx=" & movedRowIdx & " movedSFN=" & movedSFN
         Exit Function
     End If
@@ -726,13 +792,4 @@ Private Function GetNamedLong(ByVal nameText As String) As Long
     On Error Resume Next
     GetNamedLong = CLng(Evaluate(ThisWorkbook.Names(nameText).RefersTo))
     On Error GoTo 0
-End Function
-
-Private Function JoinLongArray(ByRef arr() As Long) As String
-    Dim i As Long, s As String
-    For i = LBound(arr) To UBound(arr)
-        If LenB(s) > 0 Then s = s & ","
-        s = s & CStr(arr(i))
-    Next i
-    JoinLongArray = s
 End Function
