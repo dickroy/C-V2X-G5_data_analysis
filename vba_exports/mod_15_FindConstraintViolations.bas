@@ -479,6 +479,54 @@ CleanFail:
     FindConstraintViolations = -1
 End Function
 
+Public Function WriteFCVSectionToConflictLog(ByVal sectionTitle As String, ByVal startRow As Long) As Long
+    ' Reads violation rows already written to TX_SFN est Log (cols I:L, rows 8+)
+    ' and appends a titled section to Conflict Resolution Log at startRow.
+    ' Returns the next available row after the written section.
+    Dim wsCRLog As Worksheet
+    Dim wsLog As Worksheet
+    Dim r As Long
+    Dim srcRow As Long
+
+    On Error Resume Next
+    Set wsCRLog = ThisWorkbook.Worksheets("Conflict Resolution Log")
+    Set wsLog = ThisWorkbook.Worksheets("TX_SFN est Log")
+    On Error GoTo 0
+
+    If wsCRLog Is Nothing Or wsLog Is Nothing Then
+        WriteFCVSectionToConflictLog = startRow
+        Exit Function
+    End If
+
+    r = startRow
+
+    wsCRLog.Cells(r, 1).Value = sectionTitle
+    wsCRLog.Cells(r, 1).Font.Bold = True
+    wsCRLog.Cells(r, 1).Font.Size = 12
+    r = r + 1
+
+    wsCRLog.Cells(r, 1).Value = "Row"
+    wsCRLog.Cells(r, 2).Value = "SFN"
+    wsCRLog.Cells(r, 3).Value = "Type"
+    wsCRLog.Cells(r, 4).Value = "Description"
+    wsCRLog.Cells(r, 1).Resize(1, 4).Font.Bold = True
+    r = r + 1
+
+    srcRow = 8
+    Do While srcRow <= wsLog.Rows.Count
+        If IsEmpty(wsLog.Cells(srcRow, "I")) Then Exit Do
+        If Trim$(CStr(wsLog.Cells(srcRow, "I").Value)) = "" Then Exit Do
+        wsCRLog.Cells(r, 1).Value = wsLog.Cells(srcRow, "I").Value
+        wsCRLog.Cells(r, 2).Value = wsLog.Cells(srcRow, "J").Value
+        wsCRLog.Cells(r, 3).Value = wsLog.Cells(srcRow, "K").Value
+        wsCRLog.Cells(r, 4).Value = wsLog.Cells(srcRow, "L").Value
+        r = r + 1
+        srcRow = srcRow + 1
+    Loop
+
+    WriteFCVSectionToConflictLog = r + 1
+End Function
+
 Private Function GetWorkbookNameLong(ByVal nameText As String) As Long
     Dim nm As Name, expr As String, v As Variant
     On Error GoTo FailHard
