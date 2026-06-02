@@ -479,9 +479,10 @@ CleanFail:
     FindConstraintViolations = -1
 End Function
 
-Public Function WriteFCVSectionToConflictLog(ByVal sectionTitle As String, ByVal startRow As Long) As Long
+Public Function WriteFCVSectionToConflictLog(ByVal sectionTitle As String, ByVal startRow As Long, _
+                                             Optional ByVal startCol As Long = 1) As Long
     ' Reads violation rows already written to TX_SFN est Log (cols I:L, rows 8+)
-    ' and appends a titled section to Conflict Resolution Log at startRow.
+    ' and writes a titled section to Conflict Resolution Log at (startRow, startCol).
     ' Returns the next available row after the written section.
     Dim wsCRLog As Worksheet
     Dim wsLog As Worksheet
@@ -500,26 +501,26 @@ Public Function WriteFCVSectionToConflictLog(ByVal sectionTitle As String, ByVal
 
     r = startRow
 
-    wsCRLog.Cells(r, 1).Value = sectionTitle
-    wsCRLog.Cells(r, 1).Font.Bold = True
-    wsCRLog.Cells(r, 1).Font.Size = 12
+    wsCRLog.Cells(r, startCol).Value = sectionTitle
+    wsCRLog.Cells(r, startCol).Font.Bold = True
+    wsCRLog.Cells(r, startCol).Font.Size = 12
     r = r + 1
 
-    wsCRLog.Cells(r, 1).Value = "Row"
-    wsCRLog.Cells(r, 2).Value = "SFN"
-    wsCRLog.Cells(r, 3).Value = "Type"
-    wsCRLog.Cells(r, 4).Value = "Description"
-    wsCRLog.Cells(r, 1).Resize(1, 4).Font.Bold = True
+    wsCRLog.Cells(r, startCol).Value = "Row"
+    wsCRLog.Cells(r, startCol + 1).Value = "SFN"
+    wsCRLog.Cells(r, startCol + 2).Value = "Type"
+    wsCRLog.Cells(r, startCol + 3).Value = "Description"
+    wsCRLog.Cells(r, startCol).Resize(1, 4).Font.Bold = True
     r = r + 1
 
     srcRow = 8
     Do While srcRow <= wsLog.Rows.Count
         If IsEmpty(wsLog.Cells(srcRow, "I")) Then Exit Do
         If Trim$(CStr(wsLog.Cells(srcRow, "I").Value)) = "" Then Exit Do
-        wsCRLog.Cells(r, 1).Value = wsLog.Cells(srcRow, "I").Value
-        wsCRLog.Cells(r, 2).Value = wsLog.Cells(srcRow, "J").Value
-        wsCRLog.Cells(r, 3).Value = wsLog.Cells(srcRow, "K").Value
-        wsCRLog.Cells(r, 4).Value = wsLog.Cells(srcRow, "L").Value
+        wsCRLog.Cells(r, startCol).Value = wsLog.Cells(srcRow, "I").Value
+        wsCRLog.Cells(r, startCol + 1).Value = wsLog.Cells(srcRow, "J").Value
+        wsCRLog.Cells(r, startCol + 2).Value = wsLog.Cells(srcRow, "K").Value
+        wsCRLog.Cells(r, startCol + 3).Value = wsLog.Cells(srcRow, "L").Value
         r = r + 1
         srcRow = srcRow + 1
     Loop

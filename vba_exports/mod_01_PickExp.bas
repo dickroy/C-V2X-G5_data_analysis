@@ -844,9 +844,8 @@ runTX_SFN_CR = (crChoice <> vbNo)
     If Not wsCRLog Is Nothing Then wsCRLog.Cells.ClearContents
 
     Dim preCRViolations As Long
-    Dim crLogNextRow As Long
     preCRViolations = FindConstraintViolations(0)
-    crLogNextRow = WriteFCVSectionToConflictLog("Conflicts BEFORE Resolution", 2)
+    WriteFCVSectionToConflictLog "Conflicts BEFORE Resolution", 2, 4   ' col D
 
     If runTX_SFN_CR Then
         TX_SFNConflictResolution data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, _
@@ -862,10 +861,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
         Dim postCRViolations As Long
         postCRViolations = FindConstraintViolations(0)
         If Not wsCRLog Is Nothing Then
-            Dim postCRStartRow As Long
-            postCRStartRow = wsCRLog.Cells(wsCRLog.Rows.Count, "A").End(xlUp).Row + 2
-            If postCRStartRow < 2 Then postCRStartRow = 2
-            WriteFCVSectionToConflictLog "Conflicts AFTER Resolution", postCRStartRow
+            WriteFCVSectionToConflictLog "Conflicts AFTER Resolution", 2, 9   ' col I
         End If
     End If
 

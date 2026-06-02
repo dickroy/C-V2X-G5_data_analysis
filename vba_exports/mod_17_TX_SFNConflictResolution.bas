@@ -198,10 +198,7 @@ Private Sub WriteTimingResultsToConflictResolutionLog( _
 
     ws.Range("A2:B50").ClearContents
 
-    Dim lastUsed As Long
-    lastUsed = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-    If lastUsed < 1 Then lastUsed = 1
-    r = lastUsed + 2
+    r = 2
 
     ws.Cells(r, 1).Value = "TX_SFN CR Timing"
     ws.Cells(r, 1).Font.Bold = True
