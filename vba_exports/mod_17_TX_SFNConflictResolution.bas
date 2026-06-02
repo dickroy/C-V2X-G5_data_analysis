@@ -306,7 +306,7 @@ Private Function FindNextConflictStart() As Long
             FindNextConflictStart = r
             Exit Function
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Scanning for TX_SFN conflicts"
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 End Function
 
@@ -740,7 +740,7 @@ Private Sub WriteResolvedPoolToOutput()
             CopyRowToOutput rowIdx
             mWritten(rowIdx) = True
         End If
-        If (i Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar i, "Writing resolved rows"
+        If (i Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar i
     Next i
 End Sub
 
@@ -752,7 +752,7 @@ Private Sub WriteUnwrittenRowsToOutput()
             CopyRowToOutput r
             mWritten(r) = True
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Writing resolved rows"
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 End Sub
 
@@ -799,7 +799,7 @@ Private Sub ValidateResolvedRXTimingOnly()
                 mRemainingViolations = mRemainingViolations + 1
             End If
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Validating resolved rows"
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 End Sub
 
@@ -911,7 +911,7 @@ Private Function CollectRowsForSFN(ByVal sfnVal As Long, ByVal excludeRowIdx As 
                 rows(rowCount) = r
             End If
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Scanning buckets"
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 
     If rowCount = 0 Then
