@@ -1,6 +1,6 @@
 Attribute VB_Name = "mod_02_LatencyAnalysis"
 ' Module: Latency_Analysis_V2X_LTSC_2024
-' Version: 17.3.11-CV2X - VENDOR SEGREGATION INTEGRATED
+' Version: 17.3.12-CV2X - TOTAL LATENCY CDF SMOOTHING FIX
 ' Status: PERFORMANCE WRAPPERS, PROGRESS BAR, AND TIMING INTEGRATED
 
 Option Explicit
@@ -56,7 +56,12 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
     Dim targetTable As ListObject, appParamsTable As ListObject, pduTable As ListObject, vendorTable As ListObject
     Dim dataArr As Variant, appParamsArr As Variant, pduArr As Variant, vendorArr As Variant, rxCols() As Long, colCount As Long
     Dim txqIdx As Long, genIdx As Long, sfnIdx As Long, txidIdx As Long, msgIdIdx As Long, lenIdx As Long, i As Long
-    Dim rowTopAnchor As Double: rowTopAnchor = 20
+    Dim rowTopAnchor As Double: rowTopAnchor = 27
+    Dim headerBlockStartRow As Long: headerBlockStartRow = 2
+    Dim headerBlockRows As Long: headerBlockRows = 7
+    Dim metadataFileName As String, metadataRowsProcessed As String, metadataTxIds As String, metadataRxIds As String
+    Dim metadataDateValue As String, metadataTimeValue As String
+    Dim initialScanStartRow As Long
     
     ' Pre-fetch evaluated values
     Dim minRx As Double, maxRX As Double, stepRX As Double
@@ -168,12 +173,34 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
     Set wsHist = ThisWorkbook.Sheets.Add(After:=wsSrc)
     wsHist.Name = "Latency Analysis"
 
+    ' Metadata block (A2:B7)
+    metadataDateValue = Format$(Date, "d mmmm yyyy")
+    metadataTimeValue = Format$(Time, "hh:nn:ss")
+    metadataFileName = ThisWorkbook.FullName
+    metadataRowsProcessed = IIf((startRow = 2) And (endRow = UBound(dataArr, 1) + 1), "ALL", CStr(startRow - 1) & "-" & CStr(endRow - 1))
+    metadataTxIds = IIf(Trim$(ThisWorkbook.Names("TX_Station_Selection").RefersToRange.Value) = "ALL", vbNullString, ThisWorkbook.Names("TX_Station_Selection").RefersToRange.Value)
+    metadataRxIds = IIf(Trim$(ThisWorkbook.Names("RX_Station_Selection").RefersToRange.Value) = "ALL", vbNullString, ThisWorkbook.Names("RX_Station_Selection").RefersToRange.Value)
+
+    wsHist.Cells(headerBlockStartRow, 1).Resize(6, 2).Value = Array( _
+        Array("Date", metadataDateValue), _
+        Array("Time of Day", metadataTimeValue), _
+        Array("Filename processed", metadataFileName), _
+        Array("Rows processed", metadataRowsProcessed), _
+        Array("TX_IDs", metadataTxIds), _
+        Array("RX_IDs", metadataRxIds))
+    wsHist.Range(wsHist.Cells(headerBlockStartRow, 1), wsHist.Cells(headerBlockStartRow + 5, 1)).Font.Bold = True
+    wsHist.Range(wsHist.Cells(headerBlockStartRow, 1), wsHist.Cells(headerBlockStartRow + 5, 2)).EntireColumn.AutoFit
+    wsHist.Range("A2:B7").WrapText = False
+
+    ' Move all output down to accommodate metadata block
+    rowTopAnchor = 27 + headerBlockRows
+    initialScanStartRow = headerBlockStartRow + headerBlockRows + 1
+
     ' --- EXECUTE WITH PROGRESS TRACKING ---
     UpdateProgressBar 15, "Processing Row 1: RX MAC Latency..."
-    ' --- ROW 1: RX MAC LATENCY (Stations) ---
     RunAnalysisBlock wsHist, dataArr, rxCols, sfnIdx, txidIdx, "RX MAC LATENCY", _
                      minRx, maxRX, stepRX, _
-                     False, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors
+                     False, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors, initialScanStartRow
 
     ' ===========================================================================================
     ' INJECTED N-ROWS: UNIQUE PDU SIZE (B) FILTERED SUB-ANALYSIS
@@ -192,8 +219,6 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
     If Not pduTable Is Nothing And lenIdx > 0 Then
         pduArr = pduTable.DataBodyRange.Value
         
-        ' Build local map lookup table from ADU2NumSubchansTable
-        ' Col 1 = LEN/ADU, Col 3 = PDU Size (B), Col 4 = MCS
         For i = 1 To UBound(pduArr, 1)
             Dim aduLenKey As Long: aduLenKey = CLng(pduArr(i, 1))
             Dim pduSizeVal As Long: pduSizeVal = CLng(pduArr(i, 3))
@@ -202,7 +227,6 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
             lenToMcsMap(aduLenKey) = mcsVal
         Next i
         
-        ' Discover unique PDU Sizes actually present in ExpResultsTable
         For i = 1 To UBound(dataArr, 1)
             Dim curLen As Long: curLen = CLng(dataArr(i, lenIdx))
             If lenToPduMap.Exists(curLen) Then
@@ -211,7 +235,6 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
             End If
         Next i
         
-        ' Execute N rows if unique PDU configuration space is > 1
         If uniquePduSizes.count > 1 Then
             hasMultiplePduSizes = True
             Dim pduKey As Variant, loopIdx As Long: loopIdx = 0
@@ -222,31 +245,27 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
                 sortedPduList(loopIdx) = CLng(pduKey)
             Next pduKey
             
-            ' Chronological array sort to prevent un-ordered structural plots
             Dim x1 As Long, x2 As Long, tempSwap As Long
             For x1 = 1 To UBound(sortedPduList) - 1
                 For x2 = x1 + 1 To UBound(sortedPduList)
                     If sortedPduList(x1) > sortedPduList(x2) Then
                         tempSwap = sortedPduList(x1)
-                        sortedPduList(x1) = sortedPduList(sortedPduList(x2))
+                        sortedPduList(x1) = sortedPduList(x2)
                         sortedPduList(x2) = tempSwap
                     End If
                 Next x2
             Next x1
             
-            ' Iterate over discovered PDU values and call matching sub-arrays
             For loopIdx = 1 To UBound(sortedPduList)
                 Dim activePduFilter As Long: activePduFilter = sortedPduList(loopIdx)
                 rowTopAnchor = rowTopAnchor + 280
                 
                 UpdateProgressBar 20 + Int((loopIdx / UBound(sortedPduList)) * 10), "Processing RX PDU Size Sub-Block (" & activePduFilter & " B)..."
                 
-                ' Slice the master data array isolating matching PDU payloads
                 Dim pduFilteredData() As Variant
                 Dim filteredCount As Long: filteredCount = 0
                 ReDim pduFilteredData(1 To UBound(dataArr, 1), 1 To UBound(dataArr, 2))
                 
-                ' Find corresponding MCS for title naming purposes
                 Dim activeMcsTitleVal As Long: activeMcsTitleVal = 0
                 
                 For i = 1 To UBound(dataArr, 1)
@@ -264,7 +283,6 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
                 Next i
                 
                 If filteredCount > 0 Then
-                    ' Pack rows tightly into a matching variants structure block
                     Dim finalSubData() As Variant: ReDim finalSubData(1 To filteredCount, 1 To UBound(dataArr, 2))
                     For i = 1 To filteredCount
                         For colWalk = 1 To UBound(dataArr, 2)
@@ -272,10 +290,9 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
                         Next colWalk
                     Next i
                     
-                    ' Pass structural tracking down into baseline analysis block handler
                     RunAnalysisBlock wsHist, finalSubData, rxCols, sfnIdx, txidIdx, "RX MAC LATENCY (PDU Size = " & activePduFilter & ", MCS = " & activeMcsTitleVal & ")", _
                                      minRx, maxRX, stepRX, _
-                                     False, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors
+                                     False, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors, initialScanStartRow
                 End If
             Next loopIdx
         End If
@@ -283,15 +300,11 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
     ' ===========================================================================================
 
     UpdateProgressBar 35, "Processing Row 2: TX MAC Latency..."
-    ' --- ROW 2: TX MAC LATENCY (Stations) ---
     rowTopAnchor = rowTopAnchor + 280
     RunAnalysisBlock wsHist, dataArr, rxCols, txqIdx, txidIdx, "TX MAC LATENCY", _
                      minTX, maxTX, stepTX, _
-                     True, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors, sfnIdx
+                     True, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors, initialScanStartRow
 
-    ' ===========================================================================================
-    ' INJECTED N-ROWS: UNIQUE PDU SIZE (B) FILTERED SUB-ANALYSIS FOR TX MAC LATENCY
-    ' ===========================================================================================
     If hasMultiplePduSizes Then
         For loopIdx = 1 To UBound(sortedPduList)
             activePduFilter = sortedPduList(loopIdx)
@@ -326,56 +339,45 @@ Sub GenerateLatencyAnalysis(Optional ByRef logTable As Object = Nothing, _
                 
                 RunAnalysisBlock wsHist, finalSubData, rxCols, txqIdx, txidIdx, "TX MAC LATENCY (PDU Size = " & activePduFilter & ", MCS = " & activeMcsTitleVal & ")", _
                                  minTX, maxTX, stepTX, _
-                                 True, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors, sfnIdx
+                                 True, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), False, stToVenMap, uniqueVendors, initialScanStartRow
             End If
         Next loopIdx
     End If
-    ' ===========================================================================================
 
     UpdateProgressBar 55, "Processing Row 3: Total Latency..."
-    ' --- ROW 3: TOTAL LATENCY (Stations) ---
     rowTopAnchor = rowTopAnchor + 280
     RunAnalysisBlock wsHist, dataArr, rxCols, genIdx, txidIdx, "TOTAL LATENCY", _
                      minTot, maxTot, stepTot, _
-                     False, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), True, stToVenMap, uniqueVendors
+                     False, rowTopAnchor, IIf(doIndividualPlots, vbYes, vbNo), True, stToVenMap, uniqueVendors, initialScanStartRow
 
-    ' --- ROW 4: AC MAC LATENCY ---
     If msgIdIdx > 0 And acMap.count > 0 Then
         UpdateProgressBar 75, "Processing Row 4: AC MAC Latency..."
         rowTopAnchor = rowTopAnchor + 280
         RunACAnalysisBlock wsHist, dataArr, rxCols, txqIdx, msgIdIdx, acMap, "MAC LATENCY", _
-                           (minRx + minTX), (maxRX + maxTX), stepRX, rowTopAnchor, False, stToVenMap, uniqueVendors
+                           (minRx + minTX), (maxRX + maxTX), stepRX, rowTopAnchor, False, stToVenMap, uniqueVendors, initialScanStartRow
     End If
 
-    ' --- ROW 5: AC TOTAL LATENCY ---
     If msgIdIdx > 0 And acMap.count > 0 Then
         UpdateProgressBar 90, "Processing Row 5: AC Total Latency..."
         rowTopAnchor = rowTopAnchor + 280
         RunACAnalysisBlock wsHist, dataArr, rxCols, genIdx, msgIdIdx, acMap, "TOTAL LATENCY", _
-                           minTot, maxTot, stepTot, rowTopAnchor, True, stToVenMap, uniqueVendors
+                           minTot, maxTot, stepTot, rowTopAnchor, True, stToVenMap, uniqueVendors, initialScanStartRow
     End If
 
     UpdateProgressBar 95, "Formatting Report Layout..."
     wsHist.Columns("A:H").AutoFit
     wsHist.Range("B:H").NumberFormat = "0.00"
     
-    ' Disable Cover / Restore Screen Settings
     CoverScreen False
     UpdateProgressBar 100, "Done!"
-    
-    ' Clear the status bar
     Application.StatusBar = False
     
-    ' Record processing time into global logging pipeline if active
     Dim tElapsed As Double: tElapsed = MicroTimer() - tStart
     If Not logTable Is Nothing Then
         logTable("GenerateLatencyAnalysis") = tElapsed
     End If
 End Sub
 
-' ===========================================================================================
-' HELPERS: COVER & PROGRESS BAR
-' ===========================================================================================
 Private Sub CoverScreen(ByVal startPerformanceMode As Boolean)
     With Application
         If startPerformanceMode Then
@@ -404,12 +406,9 @@ Private Sub UpdateProgressBar(ByVal percent As Integer, ByVal statusMsg As Strin
     DoEvents
 End Sub
 
-' ===========================================================================================
-' CORE PROCESSING LOGIC (Vendor Splicing Applied to Target Outputs)
-' ===========================================================================================
-Sub RunAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx As Long, txidIdx As Long, title As String, _
+Private Sub RunAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx As Long, txidIdx As Long, title As String, _
                      bMin As Double, bMax As Double, bStep As Double, isTX As Boolean, topPos As Double, _
-                     choice As VbMsgBoxResult, forceIntegerTicks As Boolean, stToVenMap As Object, uniqueVendors As Object, Optional sfnIdx As Long = 0)
+                     choice As VbMsgBoxResult, forceIntegerTicks As Boolean, stToVenMap As Object, uniqueVendors As Object, Optional sfnIdx As Long = 0, Optional dataStartRow As Long = 1)
     
     Dim nBins As Long: nBins = CLng((bMax - bMin) / bStep) + 1
     If nBins > 2000 Then nBins = 2000
@@ -419,6 +418,7 @@ Sub RunAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx
     
     startRow = ws.Cells(ws.rows.count, 1).End(xlUp).Row + 2
     If ws.Cells(1, 1).Value = "" Then startRow = 1
+    If startRow < dataStartRow Then startRow = dataStartRow
     ws.Cells(startRow, 1).Value = title
     ws.Cells(startRow, 1).Font.Bold = True
     ws.Cells(startRow + 1, 1).Resize(1, 8).Value = Array("Station/Vendor", "MIN", "MAX", "MEAN", "Std. Dev.", "MODE", "95th %", "99th %")
@@ -427,7 +427,6 @@ Sub RunAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx
     Dim outRowOffset As Long: outRowOffset = 2
     Dim plotSlotIndex As Long: plotSlotIndex = 0
 
-    ' 1. Separate Vendor Sub-Pool Blocks (Replaces Single OVERALL Matrix)
     Dim vKey As Variant
     For Each vKey In uniqueVendors.Keys
         ReDim lats(1 To UBound(data, 1) * UBound(rxCols)): countVal = 0
@@ -455,7 +454,6 @@ Sub RunAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx
         End If
     Next vKey
 
-    ' 2. Conditional Station Breakdown Rows
     If choice = vbYes Then
         For n = 1 To UBound(rxCols)
             ReDim lats(1 To UBound(data, 1)): countVal = 0
@@ -477,9 +475,9 @@ Sub RunAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx
     End If
 End Sub
 
-Sub RunACAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx As Long, msgIdIdx As Long, _
+Private Sub RunACAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseIdx As Long, msgIdIdx As Long, _
                        acMap As Object, title As String, bMin As Double, bMax As Double, bStep As Double, _
-                       topPos As Double, forceIntegerTicks As Boolean, stToVenMap As Object, uniqueVendors As Object)
+                       topPos As Double, forceIntegerTicks As Boolean, stToVenMap As Object, uniqueVendors As Object, Optional dataStartRow As Long = 1)
     
     Dim nBins As Long: nBins = CLng((bMax - bMin) / bStep) + 1
     If nBins > 2000 Then nBins = 2000
@@ -488,6 +486,7 @@ Sub RunACAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseI
     Dim lats() As Double, startRow As Long, val As Double, msgKey As String
     
     startRow = ws.Cells(ws.rows.count, 1).End(xlUp).Row + 2
+    If startRow < dataStartRow Then startRow = dataStartRow
     ws.Cells(startRow, 1).Value = "AC " & title
     ws.Cells(startRow, 1).Font.Bold = True
     ws.Cells(startRow + 1, 1).Resize(1, 8).Value = Array("Station/Vendor", "MIN", "MAX", "MEAN", "Std. Dev.", "MODE", "95th %", "99th %")
@@ -496,7 +495,6 @@ Sub RunACAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseI
     Dim outRowOffset As Long: outRowOffset = 2
     Dim plotSlotIndex As Long: plotSlotIndex = 0
 
-    ' 1. Separate Vendor Sub-Pool Blocks for AC Tracking Workspace
     Dim vKey As Variant
     For Each vKey In uniqueVendors.Keys
         For acVal = 0 To 3
@@ -524,7 +522,7 @@ Sub RunACAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseI
             
             If countVal > 0 Then
                 ReDim Preserve lats(1 To countVal)
-                RenderData ws, lats, outRowOffset, nBins, bMin, bStep, "Vendor " & vKey & " (AC " & acVal & ")", startRow, plotSlotIndex, bMin, bMax, topPos, "Vendor " & vKey & " AC " & acVal & " " & title, forceIntegerTicks, True
+                RenderData ws, lats, outRowOffset, nBins, bMin, bStep, "Vendor " & vKey & " (AC " & acVal & ")", startRow, plotSlotIndex, bMin, bMax, topPos, "Vendor " & vKey & " AC " & acVal, forceIntegerTicks, True
                 outRowOffset = outRowOffset + 1
                 plotSlotIndex = plotSlotIndex + 1
             End If
@@ -532,7 +530,7 @@ Sub RunACAnalysisBlock(ws As Worksheet, data As Variant, rxCols() As Long, baseI
     Next vKey
 End Sub
 
-Sub RenderData(ws As Worksheet, arr() As Double, rowOff As Long, nB As Long, bM As Double, bS As Double, _
+Private Sub RenderData(ws As Worksheet, arr() As Double, rowOff As Long, nB As Long, bM As Double, bS As Double, _
                lbl As String, sRow As Long, slot As Long, xMin As Double, xMax As Double, topVal As Double, _
                chartTitleText As String, forceIntegerTicks As Boolean, isVendor As Boolean)
     
@@ -566,9 +564,15 @@ Sub RenderData(ws As Worksheet, arr() As Double, rowOff As Long, nB As Long, bM 
     Next i
     
     Dim curCum As Long: curCum = 0
-    For i = 1 To nB: curCum = curCum + bCounts(i): xLabels(i) = bM + (i - 1) * bS: yFreq(i) = bCounts(i): yCDF(i) = curCum / n: Next i
+    For i = 1 To nB
+        curCum = curCum + bCounts(i)
+        xLabels(i) = bM + (i - 1) * bS
+        yFreq(i) = bCounts(i)
+        yCDF(i) = curCum / n
+    Next i
     
-    Dim cht As ChartObject: Set cht = ws.ChartObjects.Add(ws.Columns("J").Left + (slot * 380), topVal, 370, 260)
+    Dim cht As ChartObject
+    Set cht = ws.ChartObjects.Add(ws.Columns("J").Left + (slot * 380), topVal, 370, 260)
     With cht.Chart
         .HasTitle = True: .ChartTitle.Text = chartTitleText
         With .SeriesCollection.NewSeries
@@ -596,11 +600,9 @@ Sub RenderData(ws As Worksheet, arr() As Double, rowOff As Long, nB As Long, bM 
                 .CategoryType = xlTimeScale
                 .TickLabels.NumberFormat = "0"
                 
-                ' Calculate range
                 Dim xMaxVal As Double
                 xMaxVal = bM + (nB - 1) * bS
                 
-                ' Set clean, predictable integer step sizes
                 If xMaxVal <= 50 Then
                     .MajorUnit = 5
                 ElseIf xMaxVal <= 120 Then
@@ -625,7 +627,7 @@ Sub QuickSort(vArray As Variant, inLow As Long, inHi As Long)
     Dim pivot As Double, tmpSwap As Double, tmpLow As Long, tmpHi As Long
     tmpLow = inLow
     tmpHi = inHi
-    pivot = vArray((inLow + inHi) \ 2)
+    pivot = vArray((inLow + inHi) \\ 2)
     
     Do While (tmpLow <= tmpHi)
         While (vArray(tmpLow) < pivot And tmpLow < inHi)
@@ -655,4 +657,3 @@ Function GetMode(arr() As Double) As Double
     Next i
     GetMode = mVal
 End Function
-
