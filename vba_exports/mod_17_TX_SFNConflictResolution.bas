@@ -7,6 +7,7 @@ Option Explicit
 '   - Preserve pool-aware escape resolution behavior
 Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.3"
 Private Const DEBUG_TXSFNCR As Boolean = True
+Private Const PROGRESS_STEP_ROWS As Long = 10000
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter_TXSFNCR Lib "kernel32" Alias "QueryPerformanceCounter" (ByRef lpPerformanceCount As Currency) As Long
@@ -116,6 +117,7 @@ Public Sub TX_SFNConflictResolution( _
 
     startTime = MicroTimer_TXSFNCR()
     oldStatusBar = Application.StatusBar
+    Application.StatusBar = "TX_SFN conflict resolution running..."
 
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
 
@@ -198,68 +200,22 @@ Private Sub WriteTimingResultsToConflictResolutionLog( _
 
     r = 2
 
-    ws.Cells(r, 1).Value = "loops"
-    ws.Cells(r, 2).Value = totalLoopCount
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "find"
-    ws.Cells(r, 2).Value = totalFindSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "build"
-    ws.Cells(r, 2).Value = totalBuildSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "resolve"
-    ws.Cells(r, 2).Value = totalResolveSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "write"
-    ws.Cells(r, 2).Value = totalWriteSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "final"
-    ws.Cells(r, 2).Value = totalFinalSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "total"
-    ws.Cells(r, 2).Value = elapsedSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "ResolveEntirePool"
-    ws.Cells(r, 2).Value = mResolveEntirePoolSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "ResolveOneCset"
-    ws.Cells(r, 2).Value = mResolveOneCsetSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "TryPlaceMove"
-    ws.Cells(r, 2).Value = mTryPlaceMoveSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "LegalCheck"
-    ws.Cells(r, 2).Value = mLegalCheckSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "BucketExclude"
-    ws.Cells(r, 2).Value = mBucketExcludeSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "BucketAdd"
-    ws.Cells(r, 2).Value = mBucketAddSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "ValidateBucket"
-    ws.Cells(r, 2).Value = mValidateBucketSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "ResolveOneCsetExtract"
-    ws.Cells(r, 2).Value = mResolveOneCsetExtractSeconds
-    r = r + 1
-
-    ws.Cells(r, 1).Value = "ResolveOneCsetPost"
-    ws.Cells(r, 2).Value = mResolveOneCsetPostSeconds
+    ws.Cells(r, 1).Value = "loops": ws.Cells(r, 2).Value = totalLoopCount: r = r + 1
+    ws.Cells(r, 1).Value = "find": ws.Cells(r, 2).Value = totalFindSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "build": ws.Cells(r, 2).Value = totalBuildSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "resolve": ws.Cells(r, 2).Value = totalResolveSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "write": ws.Cells(r, 2).Value = totalWriteSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "final": ws.Cells(r, 2).Value = totalFinalSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "total": ws.Cells(r, 2).Value = elapsedSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveEntirePool": ws.Cells(r, 2).Value = mResolveEntirePoolSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveOneCset": ws.Cells(r, 2).Value = mResolveOneCsetSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "TryPlaceMove": ws.Cells(r, 2).Value = mTryPlaceMoveSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "LegalCheck": ws.Cells(r, 2).Value = mLegalCheckSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "BucketExclude": ws.Cells(r, 2).Value = mBucketExcludeSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "BucketAdd": ws.Cells(r, 2).Value = mBucketAddSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ValidateBucket": ws.Cells(r, 2).Value = mValidateBucketSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveOneCsetExtract": ws.Cells(r, 2).Value = mResolveOneCsetExtractSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveOneCsetPost": ws.Cells(r, 2).Value = mResolveOneCsetPostSeconds
 End Sub
 
 Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long, ByVal idxSFNCol As Long, ByVal idxTXID As Long, ByVal idxTXQ As Long, ByVal idxLEN As Long, ByVal idxTXperSFN As Long, ByVal idxRxCnt As Long, ByVal idxAvg As Long, ByVal idxTotLat As Long, ByVal idxGen As Long, ByRef rxDataColIdx() As Long, ByRef rxStationIDs() As Long, ByVal activeRxCount As Long, ByRef dictS2V As Object, ByRef dictVC As Object, ByRef dictA2P As Object, ByRef dictP2R As Object, ByRef dictP2Sigma As Object, ByVal txBitmap As String, ByVal bitmapLen As Long)
@@ -350,6 +306,7 @@ Private Function FindNextConflictStart() As Long
             FindNextConflictStart = r
             Exit Function
         End If
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Scanning for TX_SFN conflicts"
     Next r
 End Function
 
@@ -783,6 +740,7 @@ Private Sub WriteResolvedPoolToOutput()
             CopyRowToOutput rowIdx
             mWritten(rowIdx) = True
         End If
+        If (i Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar i, "Writing resolved rows"
     Next i
 End Sub
 
@@ -794,6 +752,7 @@ Private Sub WriteUnwrittenRowsToOutput()
             CopyRowToOutput r
             mWritten(r) = True
         End If
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Writing resolved rows"
     Next r
 End Sub
 
@@ -840,6 +799,7 @@ Private Sub ValidateResolvedRXTimingOnly()
                 mRemainingViolations = mRemainingViolations + 1
             End If
         End If
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Validating resolved rows"
     Next r
 End Sub
 
@@ -951,6 +911,7 @@ Private Function CollectRowsForSFN(ByVal sfnVal As Long, ByVal excludeRowIdx As 
                 rows(rowCount) = r
             End If
         End If
+        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r, "Scanning buckets"
     Next r
 
     If rowCount = 0 Then
