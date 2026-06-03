@@ -1,10 +1,11 @@
 Option Explicit
 
-' Version: V1.0.3
-' V1.0.3 changes:
-'   - Fix CSet ordering runtime error 9 in inner-most selection
-'   - Preserve pool-aware escape resolution behavior
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.3"
+' Version: V1.0.4
+' V1.0.4 changes:
+'   - Add hard reset of all module-level conflict resolution state at the start of each run
+'   - Keep progress updates only in the outer scan loop, gated by PROGRESS_STEP_ROWS
+'   - Preserve deterministic pool/CSet resolution behavior and existing diagnostics
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.4"
 Private Const DEBUG_TXSFNCR As Boolean = True
 Private Const PROGRESS_STEP_ROWS As Long = 100
 
@@ -206,9 +207,13 @@ Public Sub TX_SFNConflictResolution( _
     End If
 
     Do
-        If (mScanPos Mod PROGRESS_STEP_ROWS) = 0 Then
-            UpdateProgressBar mScanPos
+        If mScanPos > 0 Then
+            If (mScanPos Mod PROGRESS_STEP_ROWS) = 0 Then
+                UpdateProgressBar mScanPos
+                DoEvents
+            End If
         End If
+
         t0 = MicroTimer_TXSFNCR()
 
         tPhase = MicroTimer_TXSFNCR()
@@ -395,13 +400,11 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
     leftRow = startRow
     rightRow = startRow + 1
 
-    Do While leftRow > 1
-        If mCurrentSFN(leftRow - 1) <> mCurrentSFN(leftRow) Then Exit Do
+    Do While leftRow > 1 And mCurrentSFN(leftRow - 1) = mCurrentSFN(leftRow)
         leftRow = leftRow - 1
     Loop
 
-    Do While rightRow < mFilteredCount
-        If mCurrentSFN(rightRow + 1) <> mCurrentSFN(rightRow) Then Exit Do
+    Do While rightRow < mFilteredCount And mCurrentSFN(rightRow + 1) = mCurrentSFN(rightRow)
         rightRow = rightRow + 1
     Loop
 
