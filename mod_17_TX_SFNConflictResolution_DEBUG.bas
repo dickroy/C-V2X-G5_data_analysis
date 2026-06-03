@@ -1,16 +1,17 @@
 Option Explicit
 
 ' Version: V1.0.3-DEBUG
-' DEBUG build of TX_SFN conflict resolution.
-' Rule: GROUPS SHALL NEVER BE SPLIT.
-' Purpose: trace every pool/cset decision and row move to diagnose why valid groups were altered.
+' V1.0.3 changes:
+'   - Fix CSet ordering runtime error 9 in inner-most selection
+'   - Preserve pool-aware escape resolution behavior
+' DEBUG build:
+'   - Emits Debug.Print and CR DEBUG worksheet entries
+'   - Creates CR DEBUG sheet if missing
+'   - Preserves the original conflict-resolution logic/body
 Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.3-DEBUG"
 Private Const DEBUG_TXSFNCR As Boolean = True
-Private Const DEBUG_VERBOSE_TXSFNCR As Boolean = True
-Private Const DEBUG_LOG_SHEET As String = "CR DEBUG"
-Private Const DEBUG_WARN_ROW_THRESHOLD As Long = 100
-Private Const NO_RX_TIME As Double = -1#
 Private Const PROGRESS_STEP_ROWS As Long = 10000
+Private Const DEBUG_LOG_SHEET As String = "CR DEBUG"
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter_TXSFNCR Lib "kernel32" Alias "QueryPerformanceCounter" (ByRef lpPerformanceCount As Currency) As Long
@@ -25,6 +26,8 @@ Private Type TCsetAnalysis
     candidateCount As Long
     candidateRows() As Long
 End Type
+
+Private Const NO_RX_TIME As Double = -1#
 
 Private mData As Variant
 Private mFilteredCount As Long
@@ -47,6 +50,7 @@ Private mDictVC As Object
 Private mDictA2P As Object
 Private mDictP2R As Object
 Private mDictP2Sigma As Object
+Private mMissingPduSizes As Object
 Private mInitialSFN() As Long
 Private mCurrentSFN() As Long
 Private mRowTXID() As Long
@@ -92,26 +96,22 @@ Private mResolveOneCsetExtractSeconds As Double
 Private mResolveOneCsetPostSeconds As Double
 Private mDebugWs As Worksheet
 Private mDebugRow As Long
-Private mOriginalConflictCount As Long
 
-Public Sub Run_TX_SFNConflictResolution_DEBUG()
-    TX_SFNConflictResolution_DEBUG
+Public Sub Run_TX_SFNConflictResolution()
+    MsgBox "Run_TX_SFNConflictResolution is a wrapper. Call TX_SFNConflictResolution from PickExp.", vbInformation, "TX_SFN Conflict Resolution " & MODULE_VERSION_TXSFNCR
 End Sub
 
-Public Sub TX_SFNConflictResolution_DEBUG( _
-    Optional ByRef data As Variant, Optional ByVal filteredCount As Long = 0, Optional ByVal idxSFNCol As Long = 0, Optional ByVal idxTXID As Long = 0, _
-    Optional ByVal idxTXQ As Long = 0, Optional ByVal idxLEN As Long = 0, Optional ByVal idxTXperSFN As Long = 0, Optional ByVal idxRxCnt As Long = 0, _
-    Optional ByVal idxAvg As Long = 0, Optional ByVal idxTotLat As Long = 0, Optional ByVal idxGen As Long = 0, Optional ByRef rxDataColIdx() As Long, _
-    Optional ByRef rxStationIDs() As Long, Optional ByVal activeRxCount As Long = 0, Optional ByRef dictS2V As Object, Optional ByRef dictVC As Object, _
-    Optional ByRef dictA2P As Object, Optional ByRef dictP2R As Object, Optional ByRef dictP2Sigma As Object, Optional ByVal txBitmap As String = "", _
-    Optional ByVal bitmapLen As Long = 0, Optional ByRef elapsedSeconds As Double)
+Public Sub TX_SFNConflictResolution( _
+    ByRef data As Variant, ByVal filteredCount As Long, ByVal idxSFNCol As Long, ByVal idxTXID As Long, _
+    ByVal idxTXQ As Long, ByVal idxLEN As Long, ByVal idxTXperSFN As Long, ByVal idxRxCnt As Long, _
+    ByVal idxAvg As Long, ByVal idxTotLat As Long, ByVal idxGen As Long, ByRef rxDataColIdx() As Long, _
+    ByRef rxStationIDs() As Long, ByVal activeRxCount As Long, ByRef dictS2V As Object, ByRef dictVC As Object, _
+    ByRef dictA2P As Object, ByRef dictP2R As Object, ByRef dictP2Sigma As Object, ByVal txBitmap As String, _
+    ByVal bitmapLen As Long, ByRef elapsedSeconds As Double)
 
     Dim startTime As Double
-    Dim conflictStart As Long
-    Dim poolMoved As Boolean
-    Dim continueAllowed As VbMsgBoxResult
     Dim t0 As Double
-    Dim tPhase As Double
+    Dim conflictStart As Long
     Dim totalFindSeconds As Double
     Dim totalBuildSeconds As Double
     Dim totalResolveSeconds As Double
@@ -119,50 +119,51 @@ Public Sub TX_SFNConflictResolution_DEBUG( _
     Dim totalFinalSeconds As Double
     Dim totalLoopCount As Long
     Dim oldStatusBar As Variant
-
-    If filteredCount > DEBUG_WARN_ROW_THRESHOLD Then
-        continueAllowed = MsgBox("WARNING: This routine creates copious outputs." & vbCrLf & vbCrLf & _
-                                 "Are you sure you want to continue?" & vbCrLf & vbCrLf & _
-                                 "Rows to be processed: " & filteredCount, _
-                                 vbYesNo + vbExclamation, _
-                                 "TX_SFN Conflict Resolution DEBUG")
-        If continueAllowed = vbNo Then Exit Sub
-    End If
+    Dim tPhase As Double
+    Dim poolMoved As Boolean
 
     startTime = MicroTimer_TXSFNCR()
     oldStatusBar = Application.StatusBar
     Application.StatusBar = "TX_SFN conflict resolution running..."
 
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
-    SetupDebugLog
-    LogDebugHeader
+    EnsureDebugSheet
+    LogDebug "START", "rows=" & filteredCount, "bitmapLen=" & bitmapLen, "activeRx=" & activeRxCount, "version=" & MODULE_VERSION_TXSFNCR, ""
 
     If Not ValidateInputMonotoneTXSFN() Then
-        LogDebug "ABORT", "Input SFN sequence is not monotone.", "", "", "", ""
+        LogDebug "ABORT", "input SFN is not monotone", "", "", "", ""
         GoTo CleanExit
     End If
 
     PrepareRowDerivedData
     InitializeOutputBuffer
-    LogDebug "INIT", "rows=" & mFilteredCount, "bitmapLen=" & mBitmapLen, "activeRx=" & mActiveRxCount, "", ""
+    mTxBitmap = txBitmap
+
+    If Not IsAllOnesBitmap(mTxBitmap) Then
+        MsgBox "TX_SFN Conflict Resolution skipped: TX bitmap is not all ones.", vbInformation, "TX_SFN Conflict Resolution"
+        LogDebug "SKIP", "TX bitmap is not all ones", "", "", "", ""
+        GoTo CleanExit
+    End If
 
     Do
-        If (mScanPos Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar mScanPos
-        t0 = MicroTimer_TXSFNCR()
+        If (mScanPos Mod PROGRESS_STEP_ROWS) = 0 Then
+            UpdateProgressBar mScanPos
+        End If
 
+        t0 = MicroTimer_TXSFNCR()
         tPhase = MicroTimer_TXSFNCR()
         conflictStart = FindNextConflictStart()
         totalFindSeconds = totalFindSeconds + (MicroTimer_TXSFNCR() - tPhase)
 
         If conflictStart <= 0 Then Exit Do
 
+        tPhase = MicroTimer_TXSFNCR()
         BuildPoolFromConflictStart conflictStart
-        LogPoolState conflictStart
+        totalBuildSeconds = totalBuildSeconds + (MicroTimer_TXSFNCR() - tPhase)
 
         tPhase = MicroTimer_TXSFNCR()
         poolMoved = ResolveEntirePool()
         totalResolveSeconds = totalResolveSeconds + (MicroTimer_TXSFNCR() - tPhase)
-        LogDebug "POOL_RESOLVE_COMPLETE", "moved=" & CStr(poolMoved), "poolCount=" & mPoolCount, "resolvedCount=" & mPoolCountResolved, "unresolvedAttempts=" & mUnresolvedAttemptCount, ""
 
         tPhase = MicroTimer_TXSFNCR()
         WriteResolvedPoolToOutput
@@ -172,8 +173,9 @@ Public Sub TX_SFNConflictResolution_DEBUG( _
             mScanPos = mPoolRows(mPoolCount) + 1
         End If
 
-        totalLoopCount = totalLoopCount + 1
         mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
+        totalLoopCount = totalLoopCount + 1
+        LogDebug "LOOP", "loop=" & totalLoopCount, "start=" & conflictStart, "poolCount=" & mPoolCount, "moved=" & CStr(poolMoved), "scanPos=" & mScanPos
     Loop
 
     t0 = MicroTimer_TXSFNCR()
@@ -187,13 +189,14 @@ Public Sub TX_SFNConflictResolution_DEBUG( _
     elapsedSeconds = MicroTimer_TXSFNCR() - startTime
 
     Debug.Print "SUMMARY", "loops", totalLoopCount, "find", Format$(totalFindSeconds, "0.000"), "build", Format$(totalBuildSeconds, "0.000"), "resolve", Format$(totalResolveSeconds, "0.000"), "write", Format$(totalWriteSeconds, "0.000"), "final", Format$(totalFinalSeconds, "0.000"), "total", Format$(elapsedSeconds, "0.000")
+    LogDebug "SUMMARY", "loops=" & totalLoopCount, "find=" & Format$(totalFindSeconds, "0.000"), "build=" & Format$(totalBuildSeconds, "0.000"), "resolve=" & Format$(totalResolveSeconds, "0.000"), "write=" & Format$(totalWriteSeconds, "0.000")
     WriteTimingResultsToConflictResolutionLog totalLoopCount, totalFindSeconds, totalBuildSeconds, totalResolveSeconds, totalWriteSeconds, totalFinalSeconds, elapsedSeconds
 
 CleanExit:
     Application.StatusBar = oldStatusBar
 End Sub
 
-Private Sub SetupDebugLog()
+Private Sub EnsureDebugSheet()
     On Error Resume Next
     Set mDebugWs = ThisWorkbook.Worksheets(DEBUG_LOG_SHEET)
     On Error GoTo 0
@@ -201,14 +204,10 @@ Private Sub SetupDebugLog()
         Set mDebugWs = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
         mDebugWs.Name = DEBUG_LOG_SHEET
     End If
-    mDebugWs.Cells.Clear
-    mDebugRow = 1
-End Sub
-
-Private Sub LogDebugHeader()
-    LogDebug "Event", "A", "B", "C", "D", "E"
-    LogDebug "RULE", "GROUPS SHALL NEVER BE SPLIT", "", "", "", ""
-    LogDebug "VERSION", MODULE_VERSION_TXSFNCR, "", "", "", ""
+    If mDebugWs.Range("A1").Value = vbNullString Then
+        mDebugWs.Range("A1:F1").Value = Array("Event", "A", "B", "C", "D", "E")
+    End If
+    mDebugRow = Application.WorksheetFunction.Max(2, mDebugWs.Cells(mDebugWs.Rows.Count, 1).End(xlUp).Row + 1)
 End Sub
 
 Private Sub LogDebug(ByVal eventName As String, ByVal a As String, ByVal b As String, ByVal c As String, ByVal d As String, ByVal e As String)
@@ -223,24 +222,43 @@ Private Sub LogDebug(ByVal eventName As String, ByVal a As String, ByVal b As St
     mDebugRow = mDebugRow + 1
 End Sub
 
-Private Sub LogPoolState(ByVal conflictStart As Long)
-    Dim i As Long
-    Dim s As String
-    s = "rows="
-    For i = 1 To mPoolCount
-        s = s & mPoolRows(i) & IIf(i < mPoolCount, ",", "")
-    Next i
-    LogDebug "POOL_BUILT", "seedConflictStart=" & conflictStart, "poolCount=" & mPoolCount, "minSFN=" & mPoolMinSFN, "maxSFN=" & mPoolMaxSFN, s
-End Sub
+Private Sub WriteTimingResultsToConflictResolutionLog( _
+    ByVal totalLoopCount As Long, _
+    ByVal totalFindSeconds As Double, _
+    ByVal totalBuildSeconds As Double, _
+    ByVal totalResolveSeconds As Double, _
+    ByVal totalWriteSeconds As Double, _
+    ByVal totalFinalSeconds As Double, _
+    ByVal elapsedSeconds As Double)
 
-Private Function MicroTimer_TXSFNCR() As Double
-    Dim cyTicks As Currency
-    Dim cyFreq As Currency
-    If QueryPerformanceFrequency_TXSFNCR(cyFreq) <> 0 Then
-        QueryPerformanceCounter_TXSFNCR cyTicks
-        If cyFreq > 0 Then MicroTimer_TXSFNCR = cyTicks / cyFreq
-    End If
-End Function
+    Dim ws As Worksheet
+    Dim r As Long
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("Conflict Resolution Log")
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Sub
+
+    ws.Range("A2:B50").ClearContents
+
+    r = 2
+    ws.Cells(r, 1).Value = "loops": ws.Cells(r, 2).Value = totalLoopCount: r = r + 1
+    ws.Cells(r, 1).Value = "find": ws.Cells(r, 2).Value = totalFindSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "build": ws.Cells(r, 2).Value = totalBuildSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "resolve": ws.Cells(r, 2).Value = totalResolveSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "write": ws.Cells(r, 2).Value = totalWriteSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "final": ws.Cells(r, 2).Value = totalFinalSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "total": ws.Cells(r, 2).Value = elapsedSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveEntirePool": ws.Cells(r, 2).Value = mResolveEntirePoolSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveOneCset": ws.Cells(r, 2).Value = mResolveOneCsetSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "TryPlaceMove": ws.Cells(r, 2).Value = mTryPlaceMoveSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "LegalCheck": ws.Cells(r, 2).Value = mLegalCheckSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "BucketExclude": ws.Cells(r, 2).Value = mBucketExcludeSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "BucketAdd": ws.Cells(r, 2).Value = mBucketAddSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ValidateBucket": ws.Cells(r, 2).Value = mValidateBucketSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveOneCsetExtract": ws.Cells(r, 2).Value = mResolveOneCsetExtractSeconds: r = r + 1
+    ws.Cells(r, 1).Value = "ResolveOneCsetPost": ws.Cells(r, 2).Value = mResolveOneCsetPostSeconds
+End Sub
 
 Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long, ByVal idxSFNCol As Long, ByVal idxTXID As Long, ByVal idxTXQ As Long, ByVal idxLEN As Long, ByVal idxTXperSFN As Long, ByVal idxRxCnt As Long, ByVal idxAvg As Long, ByVal idxTotLat As Long, ByVal idxGen As Long, ByRef rxDataColIdx() As Long, ByRef rxStationIDs() As Long, ByVal activeRxCount As Long, ByRef dictS2V As Object, ByRef dictVC As Object, ByRef dictA2P As Object, ByRef dictP2R As Object, ByRef dictP2Sigma As Object, ByVal txBitmap As String, ByVal bitmapLen As Long)
     mData = data
@@ -268,7 +286,6 @@ Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long
     mOutputWritePos = 1
     mPoolCount = 0
     mPoolCestCount = 0
-    mOriginalConflictCount = 0
     If DEBUG_TXSFNCR Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
 End Sub
 
