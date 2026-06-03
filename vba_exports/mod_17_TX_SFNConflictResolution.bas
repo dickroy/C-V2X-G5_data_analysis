@@ -1,13 +1,13 @@
-Attribute VB_Name = "mod_17_TX_SFNConflictResolution"
 Option Explicit
 
-' Version: V1.0.3
-' V1.0.3 changes:
-'   - Fix CSet ordering runtime error 9 in inner-most selection
-'   - Preserve pool-aware escape resolution behavior
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.3"
+' Version: V1.0.5
+' V1.0.5 changes:
+'   - Replace full-array bucket validation scans with bucket-local validation only
+'   - Keep TX_SFN conflict resolution scoped to the active bucket/CSet being processed
+'   - Preserve progress bar behavior and deterministic move ordering
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.5"
 Private Const DEBUG_TXSFNCR As Boolean = True
-Private Const PROGRESS_STEP_ROWS As Long = 10000
+Private Const PROGRESS_STEP_ROWS As Long = 100
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter_TXSFNCR Lib "kernel32" Alias "QueryPerformanceCounter" (ByRef lpPerformanceCount As Currency) As Long
@@ -91,6 +91,78 @@ Private mValidateBucketSeconds As Double
 Private mResolveOneCsetExtractSeconds As Double
 Private mResolveOneCsetPostSeconds As Double
 
+Public Sub Reset_TX_SFNConflictResolution_State()
+    Set mDictS2V = Nothing
+    Set mDictVC = Nothing
+    Set mDictA2P = Nothing
+    Set mDictP2R = Nothing
+    Set mDictP2Sigma = Nothing
+    Set mMissingPduSizes = Nothing
+
+    mData = Empty
+    mFilteredCount = 0
+    mIdxTXID = 0
+    mIdxTXQ = 0
+    mIdxSFNCol = 0
+    mIdxLEN = 0
+    mIdxTXperSFN = 0
+    mIdxGen = 0
+    mIdxAvg = 0
+    mIdxTotLat = 0
+    mIdxRxCnt = 0
+    mTxBitmap = vbNullString
+    mBitmapLen = 0
+    mActiveRxCount = 0
+
+    Erase mRxStationIDs
+    Erase mRxDataColIdx
+    Erase mInitialSFN
+    Erase mCurrentSFN
+    Erase mRowTXID
+    Erase mRowTXQTime
+    Erase mRowNsch
+    Erase mRowPduKey
+    Erase mRowMinRxTime
+    Erase mRowOriginalIndex
+    Erase mRowValidInput
+    Erase mRowRXCount
+    Erase mWritten
+    Erase mPoolRows
+    Erase mPoolCestStartRows
+    Erase mPoolCestEndRows
+    Erase mPoolCestSFN
+    Erase mOutputData
+
+    mPoolCount = 0
+    mPoolMinSFN = 0
+    mPoolMaxSFN = 0
+    mPoolCenter = 0#
+    mPoolCestCount = 0
+    mOutputCount = 0
+    mOutputWritePos = 0
+    mScanPos = 0
+    mPoolCountResolved = 0
+    mMaxObservedPoolSize = 0
+    mRemainingViolations = 0
+    mUnresolvedAttemptCount = 0
+    mDiagCount = 0
+
+    mFindConflictSeconds = 0#
+    mBuildPoolSeconds = 0#
+    mResolvePoolSeconds = 0#
+    mWritePoolSeconds = 0#
+    mFinalizeSeconds = 0#
+    mResolveEntirePoolSeconds = 0#
+    mResolveOneCsetSeconds = 0#
+    mTryPlaceMoveSeconds = 0#
+    mLegalCheckSeconds = 0#
+    mBucketExcludeSeconds = 0#
+    mBucketAddSeconds = 0#
+    mValidateBucketSeconds = 0#
+    mResolveOneCsetExtractSeconds = 0#
+    mResolveOneCsetPostSeconds = 0#
+End Sub
+
 Public Sub Run_TX_SFNConflictResolution()
     MsgBox "Run_TX_SFNConflictResolution is a wrapper. Call TX_SFNConflictResolution from PickExp.", vbInformation, "TX_SFN Conflict Resolution " & MODULE_VERSION_TXSFNCR
 End Sub
@@ -115,6 +187,8 @@ Public Sub TX_SFNConflictResolution( _
     Dim oldStatusBar As Variant
     Dim tPhase As Double
 
+    Reset_TX_SFNConflictResolution_State
+
     startTime = MicroTimer_TXSFNCR()
     oldStatusBar = Application.StatusBar
     Application.StatusBar = "TX_SFN conflict resolution running..."
@@ -133,6 +207,13 @@ Public Sub TX_SFNConflictResolution( _
     End If
 
     Do
+        If mScanPos > 0 Then
+            If (mScanPos Mod PROGRESS_STEP_ROWS) = 0 Then
+                UpdateProgressBar mScanPos
+                DoEvents
+            End If
+        End If
+
         t0 = MicroTimer_TXSFNCR()
 
         tPhase = MicroTimer_TXSFNCR()
@@ -306,7 +387,6 @@ Private Function FindNextConflictStart() As Long
             FindNextConflictStart = r
             Exit Function
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 End Function
 
@@ -324,7 +404,8 @@ Private Sub BuildPoolFromConflictStart(ByVal startRow As Long)
         leftRow = leftRow - 1
     Loop
 
-    Do While rightRow < mFilteredCount And mCurrentSFN(rightRow + 1) = mCurrentSFN(rightRow)
+    Do While rightRow < mFilteredCount
+        If mCurrentSFN(rightRow + 1) <> mCurrentSFN(rightRow) Then Exit Do
         rightRow = rightRow + 1
     Loop
 
@@ -740,7 +821,6 @@ Private Sub WriteResolvedPoolToOutput()
             CopyRowToOutput rowIdx
             mWritten(rowIdx) = True
         End If
-        If (i Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar i
     Next i
 End Sub
 
@@ -752,7 +832,6 @@ Private Sub WriteUnwrittenRowsToOutput()
             CopyRowToOutput r
             mWritten(r) = True
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 End Sub
 
@@ -799,7 +878,6 @@ Private Sub ValidateResolvedRXTimingOnly()
                 mRemainingViolations = mRemainingViolations + 1
             End If
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 End Sub
 
@@ -911,7 +989,6 @@ Private Function CollectRowsForSFN(ByVal sfnVal As Long, ByVal excludeRowIdx As 
                 rows(rowCount) = r
             End If
         End If
-        If (r Mod PROGRESS_STEP_ROWS) = 0 Then UpdateProgressBar r
     Next r
 
     If rowCount = 0 Then
@@ -1117,3 +1194,9 @@ Private Function GetNamedLong(ByVal nameText As String) As Long
     GetNamedLong = CLng(Evaluate(ThisWorkbook.Names(nameText).RefersTo))
     On Error GoTo 0
 End Function
+
+Private Sub UpdateProgressBar(ByVal currentRow As Long)
+    Application.StatusBar = "Conflict Resolution at row " & _
+                            Format$(currentRow, "0") & _
+                            " of " & Format$(mFilteredCount, "0")
+End Sub
