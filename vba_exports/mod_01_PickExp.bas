@@ -576,7 +576,21 @@ runTX_SFN_CR = (crChoice <> vbNo)
         wsLogSheet.Range("A1").Font.Bold = True
         wsLogSheet.Range("A1").Font.Size = 14
 
-        runningRowPos = 4
+        wsLogSheet.Cells(2, 1).Value = "Generated:"
+        wsLogSheet.Cells(2, 2).Value = Now
+        wsLogSheet.Cells(3, 1).Value = "Filtered Rows:"
+        wsLogSheet.Cells(3, 2).Value = filteredCount
+        wsLogSheet.Cells(4, 1).Value = "TX Stations:"
+        wsLogSheet.Cells(4, 2).Value = dictS2V.Count
+        wsLogSheet.Cells(5, 1).Value = "Vendors:"
+        wsLogSheet.Cells(5, 2).Value = uniqueVendors.Count
+        wsLogSheet.Cells(6, 1).Value = "TX Bitmap:"
+        wsLogSheet.Cells(6, 2).Value = txBitmap
+        wsLogSheet.Cells(7, 1).Value = "Bitmap Length:"
+        wsLogSheet.Cells(7, 2).Value = bitmapLen
+        wsLogSheet.Range("A2:A7").Font.Bold = True
+
+        runningRowPos = 11
         finalChartRowBottom = runningRowPos + 4
 
         For vendorIdx = LBound(vendorKeys) To UBound(vendorKeys)
@@ -821,12 +835,34 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
     Dim cwlsSeconds As Double
     cwlsSeconds = 0
-    
+
+    ' --- PRE-CR: Full constraint scan before conflict resolution ---
+    Dim wsCRLog As Worksheet
+    On Error Resume Next
+    Set wsCRLog = ThisWorkbook.Worksheets("Conflict Resolution Log")
+    On Error GoTo 0
+    If Not wsCRLog Is Nothing Then wsCRLog.Cells.ClearContents
+
+    Dim preCRViolations As Long
+    preCRViolations = FindConstraintViolations(0)
+    WriteFCVSectionToConflictLog "Conflicts BEFORE Resolution", 2, 4   ' col D
+
     If runTX_SFN_CR Then
         TX_SFNConflictResolution data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, _
                                idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, _
                                activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, _
                                txBitmap, bitmapLen, cwlsSeconds
+    End If
+
+    ' --- POST-CR: Full constraint scan after conflict resolution ---
+    If runTX_SFN_CR Then
+        ' Sync data array back to the table so FindConstraintViolations reads updated values
+        targetTable.DataBodyRange.Value = data
+        Dim postCRViolations As Long
+        postCRViolations = FindConstraintViolations(0)
+        If Not wsCRLog Is Nothing Then
+            WriteFCVSectionToConflictLog "Conflicts AFTER Resolution", 2, 9   ' col I
+        End If
     End If
 
  ' 7. FINAL CALCULATIONS & WRITEBACK
