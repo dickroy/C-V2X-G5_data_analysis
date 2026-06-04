@@ -1,12 +1,13 @@
 Option Explicit
 
-' Version: V1.0.5
-' V1.0.5 changes:
-'   - Replace full-array bucket validation scans with bucket-local validation only
-'   - Keep TX_SFN conflict resolution scoped to the active bucket/CSet being processed
-'   - Preserve progress bar behavior and deterministic move ordering
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.5"
-Private Const DEBUG_TXSFNCR As Boolean = True
+' Version: V1.0.6
+' V1.0.6 changes:
+'   - Preserve v1.0.4 CR behavior while reducing hot-path overhead
+'   - Restrict bucket row collection to the active pool during CR checks
+'   - Cache timer frequency and named-range move limits to avoid repeated lookups
+Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.6"
+Private Const DEBUG_TXSFNCR As Boolean = False
+Private Const ENABLE_TIMING_TXSFNCR As Boolean = False
 Private Const PROGRESS_STEP_ROWS As Long = 100
 
 #If VBA7 Then
@@ -90,6 +91,9 @@ Private mBucketAddSeconds As Double
 Private mValidateBucketSeconds As Double
 Private mResolveOneCsetExtractSeconds As Double
 Private mResolveOneCsetPostSeconds As Double
+Private mMaxTXSFNDec As Long
+Private mMaxTXSFNInc As Long
+Private mMaxTXSFNDelta As Long
 
 Public Sub Reset_TX_SFNConflictResolution_State()
     Set mDictS2V = Nothing
@@ -161,6 +165,9 @@ Public Sub Reset_TX_SFNConflictResolution_State()
     mValidateBucketSeconds = 0#
     mResolveOneCsetExtractSeconds = 0#
     mResolveOneCsetPostSeconds = 0#
+    mMaxTXSFNDec = 0
+    mMaxTXSFNInc = 0
+    mMaxTXSFNDelta = 0
 End Sub
 
 Public Sub Run_TX_SFNConflictResolution()
@@ -186,9 +193,11 @@ Public Sub TX_SFNConflictResolution( _
     Dim totalLoopCount As Long
     Dim oldStatusBar As Variant
     Dim tPhase As Double
+    Dim wallStartSeconds As Single
 
     Reset_TX_SFNConflictResolution_State
 
+    wallStartSeconds = Timer
     startTime = MicroTimer_TXSFNCR()
     oldStatusBar = Application.StatusBar
     Application.StatusBar = "TX_SFN conflict resolution running..."
@@ -250,7 +259,11 @@ Public Sub TX_SFNConflictResolution( _
     totalFinalSeconds = MicroTimer_TXSFNCR() - t0
 
     mFinalizeSeconds = mFinalizeSeconds + totalFinalSeconds
-    elapsedSeconds = MicroTimer_TXSFNCR() - startTime
+    If ENABLE_TIMING_TXSFNCR Then
+        elapsedSeconds = MicroTimer_TXSFNCR() - startTime
+    Else
+        elapsedSeconds = ElapsedFromTimer(wallStartSeconds)
+    End If
 
     Debug.Print "SUMMARY", "loops", totalLoopCount, "find", Format$(totalFindSeconds, "0.000"), "build", Format$(totalBuildSeconds, "0.000"), "resolve", Format$(totalResolveSeconds, "0.000"), "write", Format$(totalWriteSeconds, "0.000"), "final", Format$(totalFinalSeconds, "0.000"), "total", Format$(elapsedSeconds, "0.000")
 
@@ -325,6 +338,15 @@ Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long
     mOutputWritePos = 1
     mPoolCount = 0
     mPoolCestCount = 0
+    mMaxTXSFNDec = GetNamedLong("maxTX_SFN_est_decrement")
+    mMaxTXSFNInc = GetNamedLong("maxTX_SFN_est_increment")
+    If mMaxTXSFNDec < 0 Then mMaxTXSFNDec = 0
+    If mMaxTXSFNInc < 0 Then mMaxTXSFNInc = 0
+    If mMaxTXSFNDec > mMaxTXSFNInc Then
+        mMaxTXSFNDelta = mMaxTXSFNDec
+    Else
+        mMaxTXSFNDelta = mMaxTXSFNInc
+    End If
     If DEBUG_TXSFNCR Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
 End Sub
 
@@ -506,7 +528,6 @@ Private Function ResolveOneCset(ByVal cestIdx As Long) As Boolean
     Dim sourceSFN As Long
     Dim t As Double
     Dim tExtract As Double
-    Dim tPost As Double
 
     t = MicroTimer_TXSFNCR()
     ResolveOneCset = False
@@ -541,9 +562,6 @@ Private Function ResolveOneCset(ByVal cestIdx As Long) As Boolean
             Debug.Print "CSET resolved", "cestIdx", cestIdx, "movedRowIdx", movedRowIdx, "newSFN", mCurrentSFN(movedRowIdx)
         End If
 
-        tPost = MicroTimer_TXSFNCR()
-        BuildPoolFromConflictStart movedRowIdx
-        mResolveOneCsetPostSeconds = mResolveOneCsetPostSeconds + (MicroTimer_TXSFNCR() - tPost)
     Else
         mUnresolvedAttemptCount = mUnresolvedAttemptCount + 1
     End If
@@ -627,9 +645,9 @@ Private Function TryPlaceOneMovedRow_NoSourceRetest(ByRef candidateRows() As Lon
     t = MicroTimer_TXSFNCR()
     movedRowIdx = 0
 
-    maxDec = GetNamedLong("maxTX_SFN_est_decrement")
-    maxInc = GetNamedLong("maxTX_SFN_est_increment")
-    maxDelta = IIf(maxDec > maxInc, maxDec, maxInc)
+    maxDec = mMaxTXSFNDec
+    maxInc = mMaxTXSFNInc
+    maxDelta = mMaxTXSFNDelta
 
     If DEBUG_TXSFNCR Then
         Debug.Print "MOVE RANGE", "sourceSFN", sourceSFN, "maxDec", maxDec, "maxInc", maxInc, "maxDelta", maxDelta
@@ -942,11 +960,31 @@ End Sub
 
 Private Function MicroTimer_TXSFNCR() As Double
     Dim cyTicks As Currency
-    Dim cyFreq As Currency
+    Static cyFreq As Currency
+    Static freqReady As Boolean
 
-    If QueryPerformanceFrequency_TXSFNCR(cyFreq) <> 0 Then
+    If Not ENABLE_TIMING_TXSFNCR Then Exit Function
+
+    If Not freqReady Then
+        If QueryPerformanceFrequency_TXSFNCR(cyFreq) = 0 Then
+            cyFreq = 0
+        End If
+        freqReady = True
+    End If
+
+    If cyFreq > 0 Then
         QueryPerformanceCounter_TXSFNCR cyTicks
-        If cyFreq > 0 Then MicroTimer_TXSFNCR = cyTicks / cyFreq
+        MicroTimer_TXSFNCR = cyTicks / cyFreq
+    End If
+End Function
+
+Private Function ElapsedFromTimer(ByVal timerStart As Single) As Double
+    Dim timerNow As Single
+    timerNow = Timer
+    If timerNow >= timerStart Then
+        ElapsedFromTimer = CDbl(timerNow - timerStart)
+    Else
+        ElapsedFromTimer = CDbl(86400# - timerStart + timerNow)
     End If
 End Function
 
@@ -977,23 +1015,48 @@ End Function
 
 Private Function CollectRowsForSFN(ByVal sfnVal As Long, ByVal excludeRowIdx As Long, ByVal includeRowIdx As Long, ByRef rowCount As Long) As Long()
     Dim rows() As Long
+    Dim i As Long
     Dim r As Long
+    Dim scanCount As Long
+    Dim includeAlreadyAdded As Boolean
 
-    ReDim rows(1 To mFilteredCount)
+    If mPoolCount > 0 Then
+        scanCount = mPoolCount
+    Else
+        scanCount = mFilteredCount
+    End If
+
+    ReDim rows(1 To scanCount + 1)
     rowCount = 0
 
-    For r = 1 To mFilteredCount
+    For i = 1 To scanCount
+        If mPoolCount > 0 Then
+            r = mPoolRows(i)
+        Else
+            r = i
+        End If
+
         If r <> excludeRowIdx Then
             If mCurrentSFN(r) = sfnVal Or r = includeRowIdx Then
                 rowCount = rowCount + 1
                 rows(rowCount) = r
+                If r = includeRowIdx Then includeAlreadyAdded = True
             End If
         End If
-    Next r
+    Next i
+
+    If includeRowIdx > 0 And includeRowIdx <= mFilteredCount Then
+        If includeRowIdx <> excludeRowIdx Then
+            If Not includeAlreadyAdded Then
+                rowCount = rowCount + 1
+                rows(rowCount) = includeRowIdx
+            End If
+        End If
+    End If
 
     If rowCount = 0 Then
         ReDim rows(1 To 1)
-    ElseIf rowCount < mFilteredCount Then
+    ElseIf rowCount < UBound(rows) Then
         ReDim Preserve rows(1 To rowCount)
     End If
 
