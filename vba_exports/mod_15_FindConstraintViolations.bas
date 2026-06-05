@@ -545,7 +545,7 @@ NextGroup:
         wsLog.Cells(6, baseOutCol + 1).Value = mFCV_GroupCount
         wsLog.Cells(7, baseOutCol + 1).Value = mFCV_CsetCount
         wsLog.Cells(8, baseOutCol + 1).Value = mFCV_WarningGroupCount
-        wsLog.Range(wsLog.Cells(1, baseOutCol), wsLog.Cells(1, baseOutCol)).Font.Bold = True
+        wsLog.Cells(1, baseOutCol).Font.Bold = True
         wsLog.Range(wsLog.Cells(1, baseOutCol), wsLog.Cells(100000, baseOutCol + 25)).Columns.AutoFit
         mFCV_CacheValid = True
     End If
