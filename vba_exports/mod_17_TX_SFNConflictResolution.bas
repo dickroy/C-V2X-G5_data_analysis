@@ -95,6 +95,8 @@ Private mBuildPoolSeconds As Double
 Private mResolvePoolSeconds As Double
 Private mWritePoolSeconds As Double
 Private mFinalizeSeconds As Double
+Private mCachedCsetStarts() As Long
+Private mCachedCsetCount As Long
 
 Public Sub Run_TX_SFNConflictResolution()
     MsgBox "Run_TX_SFNConflictResolution is a wrapper. Call TX_SFNConflictResolution from PickExp.", vbInformation, "TX_SFN Conflict Resolution " & MODULE_VERSION_TXSFNCR
@@ -112,6 +114,7 @@ Public Sub TX_SFNConflictResolution( _
     Dim t0 As Double
     Dim conflictStart As Long
     Dim poolMoved As Boolean
+    Dim cachedIdx As Long
 
     startTime = MicroTimer_TXSFNCR()
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
@@ -119,16 +122,21 @@ Public Sub TX_SFNConflictResolution( _
     PrepareRowDerivedData
     InitializeOutputBuffer
 
-    Do
-        t0 = MicroTimer_TXSFNCR()
-        conflictStart = FindNextConflictStart()
-        If conflictStart <= 0 Then Exit Do
-        BuildPoolFromConflictStart conflictStart
-        poolMoved = ResolveEntirePool()
-        WriteResolvedPoolToOutput
-        If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
-        mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
-    Loop
+    If mCachedCsetCount > 0 Then
+        For cachedIdx = 1 To mCachedCsetCount
+            t0 = MicroTimer_TXSFNCR()
+            conflictStart = mCachedCsetStarts(cachedIdx)
+            If conflictStart > 0 And conflictStart < mFilteredCount Then
+                If mCurrentSFN(conflictStart) = mCurrentSFN(conflictStart + 1) Then
+                    BuildPoolFromConflictStart conflictStart
+                    poolMoved = ResolveEntirePool()
+                    WriteResolvedPoolToOutput
+                    If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
+                End If
+            End If
+            mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
+        Next cachedIdx
+    End If
 
     t0 = MicroTimer_TXSFNCR()
     WriteUnwrittenRowsToOutput
@@ -172,7 +180,27 @@ Private Sub InitializeContext(ByRef data As Variant, ByVal filteredCount As Long
     mMaxMoveDec = GetNamedLong("maxTX_SFN_est_decrement")
     mMaxMoveInc = GetNamedLong("maxTX_SFN_est_increment")
     mAllBitmapAllowed = (mBitmapLen <= 0 Or LenB(mTxBitmap) = 0 Or IsAllOnesBitmap(mTxBitmap))
+    LoadCachedCsets
     If DEBUG_TXSFNCR Then Debug.Print "TX_SFNCR init: filteredCount=" & mFilteredCount & " bitmapLen=" & mBitmapLen
+End Sub
+
+Private Sub LoadCachedCsets()
+    Dim i As Long
+    Dim cachedStartRow As Long
+
+    mCachedCsetCount = FCV_GetCsetCount()
+    If mCachedCsetCount <= 0 Then
+        Erase mCachedCsetStarts
+        Exit Sub
+    End If
+
+    ReDim mCachedCsetStarts(1 To mCachedCsetCount)
+    For i = 1 To mCachedCsetCount
+        cachedStartRow = FCV_GetCsetStartRow(i)
+        If cachedStartRow >= 1 And cachedStartRow <= mFilteredCount Then
+            mCachedCsetStarts(i) = cachedStartRow
+        End If
+    Next i
 End Sub
 
 Private Function ValidateInputMonotoneTXSFN() As Boolean

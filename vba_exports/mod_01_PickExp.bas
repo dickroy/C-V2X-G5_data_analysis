@@ -95,11 +95,7 @@ Sub PickExperimentFileAndMapData()
     prevCalc = Application.Calculation
     
     Dim analysisChoice As String, msgMenu As String
-Dim crChoice As VbMsgBoxResult
-
-crChoice = MsgBox("Run TX_SFN Conflict Resolution?" & vbCrLf & _
-                  "Default: Yes", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
-runTX_SFN_CR = (crChoice <> vbNo)
+    Dim crChoice As VbMsgBoxResult
 
     msgMenu = "Select C-V2X Analysis routines to execute (e.g., 12345678):" & vbCrLf & _
           "1. GenerateLatencyAnalysis" & vbCrLf & _
@@ -755,13 +751,29 @@ runTX_SFN_CR = (crChoice <> vbNo)
     filteredCount = UBound(data, 1)
     
     Dim cwlsSeconds As Double
+    Dim preCRGroups As Long
+    Dim preCRCsets As Long
+    Dim ranTXSFNCR As Boolean
     cwlsSeconds = 0
-    
+
+    FCV_title = "Group Analysis BEFORE Conflict Resolution"
+    out_col = "A"
+    Call FindConstraintViolations(0)
+    preCRGroups = FCV_GetGroupCount()
+    preCRCsets = FCV_GetCsetCount()
+
+    crChoice = MsgBox("Num SFs with multiple TXs (Groups) = " & preCRGroups & vbCrLf & _
+                      "Num Groups with Constraint Violations = " & preCRCsets & vbCrLf & _
+                      "Do you want to run Conflict Resolution?", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
+    runTX_SFN_CR = (crChoice = vbYes)
+    ranTXSFNCR = False
+
     If runTX_SFN_CR Then
         TX_SFNConflictResolution data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, _
                                idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, _
                                activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, _
                                txBitmap, bitmapLen, cwlsSeconds
+        ranTXSFNCR = True
     End If
 
    ' 7. FINAL CALCULATIONS & WRITEBACK
@@ -806,6 +818,12 @@ runTX_SFN_CR = (crChoice <> vbNo)
     If Not targetTable.DataBodyRange Is Nothing Then
         filteredCount = targetTable.DataBodyRange.rows.count
         targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
+    End If
+
+    If ranTXSFNCR Then
+        FCV_title = "Group Analysis AFTER Conflict Resolution"
+        out_col = "J"
+        Call FindConstraintViolations(0)
     End If
     
     Application.Calculation = prevCalc
