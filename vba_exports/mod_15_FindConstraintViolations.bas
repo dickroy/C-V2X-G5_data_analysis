@@ -1,6 +1,9 @@
 Attribute VB_Name = "mod_15_FindConstraintViolations"
 Option Explicit
 
+Public FCV_title As String
+Public FCV_out_col As String
+
 ' Bookmark: FindConstraintViolations_v21
 ' Status: in-memory validation:
 '   1) TX_ID uniqueness within TX_SFN_est group
@@ -50,6 +53,10 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim pduKey As String
     Dim rowRxMinStation As Long
     Dim rxThreshold As Double
+    Dim outCol As String
+    Dim outColIdx As Long
+    Dim txTblColIdx As Long
+    Dim fcvTitleText As String
 
     On Error GoTo CleanFail
 
@@ -63,13 +70,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Set vendorTxtTbl = wsCfg.ListObjects("VendorID2TXTproc")
     Set pduRxtTbl = wsCfg.ListObjects("PDU2RXTprocVendorID")
 
-    On Error Resume Next
-    Set wsLog = ThisWorkbook.Worksheets("TX_SFN est Log")
-    On Error GoTo CleanFail
-    If wsLog Is Nothing Then
-        Set wsLog = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.count))
-        wsLog.Name = "TX_SFN est Log"
-    End If
+    Set wsLog = ThisWorkbook.Worksheets("Conflict Resolution Log")
 
     maxSch = GetWorkbookNameLong("Nsch_per_subfr")
     nRx = GetWorkbookNameLong("Num_Rx_Stations")
@@ -189,9 +190,17 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         rxColIdx(i) = tbl.ListColumns("RXTIME" & CStr(i)).Index
     Next i
 
+    outCol = Trim$(UCase$(FCV_out_col))
+    If outCol = vbNullString Then outCol = "A"
+    outColIdx = wsLog.Range(outCol & "1").Column
+    txTblColIdx = outColIdx + 4
+    fcvTitleText = Trim$(FCV_title)
+
     If numViolations2Find = 0 Then
-        wsLog.Range("I2:L100000").ClearContents
-        With wsLog.Range("I2")
+        wsLog.Range(wsLog.Cells(1, outColIdx), wsLog.Cells(100000, outColIdx + 3)).ClearContents
+        wsLog.Cells(1, outColIdx).Value = fcvTitleText
+        wsLog.Cells(1, outColIdx).Font.Bold = True
+        With wsLog.Cells(3, outColIdx)
             .Value = "CONSTRAINT VALIDATION"
             .Font.Bold = True
             .Offset(1, 0).Value = "Timestamp:"
@@ -208,20 +217,20 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         End With
     End If
 
-    ' TXTproc table 5 cols left from prior placement
-    wsLog.Range("M2:N100000").ClearContents
+    ' TXTproc table starts at out_col + 4, row 3
+    wsLog.Range(wsLog.Cells(3, txTblColIdx), wsLog.Cells(100000, txTblColIdx + 1)).ClearContents
     wsLog.Range("Q2:R100000").ClearContents
 
-    wsLog.Range("M2").Value = "TX_ID"
-    wsLog.Range("N2").Value = "TXTproc"
+    wsLog.Cells(3, txTblColIdx).Value = "TX_ID"
+    wsLog.Cells(3, txTblColIdx + 1).Value = "TXTproc"
 
     wsLog.Range("Q2").Value = "Station_ID"
     wsLog.Range("R2").Value = "PDU Length / RX Timing"
 
-    writeRow = 3
+    writeRow = 4
     For Each stationKey In dictTXProc.Keys
-        wsLog.Cells(writeRow, "M").Value = stationKey
-        wsLog.Cells(writeRow, "N").Value = dictTXProc(stationKey)
+        wsLog.Cells(writeRow, txTblColIdx).Value = stationKey
+        wsLog.Cells(writeRow, txTblColIdx + 1).Value = dictTXProc(stationKey)
         writeRow = writeRow + 1
     Next stationKey
 
@@ -276,7 +285,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         End If
     Next i
 
-    writeRow = 8
+    writeRow = 9
     numViolations = 0
     Application.StatusBar = "FindConstraintViolations v21: scanning ExpResultsTable..."
 
@@ -464,9 +473,9 @@ NextGroup:
     Loop
 
     If numViolations2Find = 0 Then
-        wsLog.Range("J4").Value = numViolations
-        wsLog.Range("J5").Value = Round(Timer - startTime, 3)
-        wsLog.Columns("I:Z").AutoFit
+        wsLog.Cells(5, outColIdx + 1).Value = numViolations
+        wsLog.Cells(6, outColIdx + 1).Value = Round(Timer - startTime, 3)
+        wsLog.Range(wsLog.Cells(1, outColIdx), wsLog.Cells(100000, outColIdx + 25)).EntireColumn.AutoFit
     End If
 
     FindConstraintViolations = numViolations
@@ -527,4 +536,3 @@ Private Function HasOverlap(ByRef txArr() As Long, ByVal txN As Long, ByRef rxAr
         Next j
     Next i
 End Function
-
