@@ -95,11 +95,9 @@ Sub PickExperimentFileAndMapData()
     prevCalc = Application.Calculation
     
     Dim analysisChoice As String, msgMenu As String
-Dim crChoice As VbMsgBoxResult
-
-crChoice = MsgBox("Run TX_SFN Conflict Resolution?" & vbCrLf & _
-                  "Default: Yes", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
-runTX_SFN_CR = (crChoice <> vbNo)
+    Dim crChoice As VbMsgBoxResult
+    Dim fcvViolGroupCount As Long
+    Dim crPrompt As String
 
     msgMenu = "Select C-V2X Analysis routines to execute (e.g., 12345678):" & vbCrLf & _
           "1. GenerateLatencyAnalysis" & vbCrLf & _
@@ -756,6 +754,21 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
     Dim cwlsSeconds As Double
     cwlsSeconds = 0
+
+    fcvViolGroupCount = FindConstraintViolations(0)
+    If fcvViolGroupCount < 0 Then
+        FCV_TotalGroups = 0
+        FCV_ViolatedGroups = 0
+        crPrompt = "Conflict pre-scan failed; counts unavailable." & vbCrLf & vbCrLf
+    Else
+        crPrompt = ""
+    End If
+
+    crPrompt = crPrompt & "Num SFs with multiple TXs (Groups) = " & Format(FCV_TotalGroups, "#,##0") & vbCrLf & _
+               "Num Groups with Constraint Violations = " & Format(FCV_ViolatedGroups, "#,##0") & vbCrLf & _
+               "Do you want to run Conflict Resolution?"
+    crChoice = MsgBox(crPrompt, vbYesNo + vbQuestion + vbDefaultButton1, "TX_SFN Conflict Resolution")
+    runTX_SFN_CR = (crChoice = vbYes)
     
     If runTX_SFN_CR Then
         TX_SFNConflictResolution data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, _
