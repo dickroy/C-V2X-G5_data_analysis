@@ -51,7 +51,8 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim numViolations As Long, writeRow As Long
     Dim violationWriteRow As Long, warningWriteRow As Long
     Dim warningRows() As Long, warningSFN() As Double, warningTypes() As String, warningDesc() As String
-    Dim warningCount As Long
+    Dim warningCount As Long, warningCapacity As Long
+    Dim csetCapacity As Long
     Dim txIDs() As Long, rxStationIDs() As Long
     Dim txCount As Long, rxCount As Long
     Dim rxHasAny() As Boolean, capacitySum() As Long
@@ -318,6 +319,8 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     violationWriteRow = 11
     warningWriteRow = 0
     warningCount = 0
+    warningCapacity = 0
+    csetCapacity = 0
     numViolations = 0
     Application.StatusBar = "FindConstraintViolations v21: scanning ExpResultsTable..."
 
@@ -444,28 +447,26 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
                 rxThreshold = rxMinTime - rxProc + 3# * rxSigma
 
                 If txSfnVal > rxThreshold Then
-                    numViolations = numViolations + 1
                     groupHasWarning = True
                     If numViolations2Find = 0 Then
                         warningCount = warningCount + 1
                         If warningCount = 1 Then
-                            ReDim warningRows(1 To 1)
-                            ReDim warningSFN(1 To 1)
-                            ReDim warningTypes(1 To 1)
-                            ReDim warningDesc(1 To 1)
-                        Else
-                            ReDim Preserve warningRows(1 To warningCount)
-                            ReDim Preserve warningSFN(1 To warningCount)
-                            ReDim Preserve warningTypes(1 To warningCount)
-                            ReDim Preserve warningDesc(1 To warningCount)
+                            warningCapacity = 32
+                            ReDim warningRows(1 To warningCapacity)
+                            ReDim warningSFN(1 To warningCapacity)
+                            ReDim warningTypes(1 To warningCapacity)
+                            ReDim warningDesc(1 To warningCapacity)
+                        ElseIf warningCount > warningCapacity Then
+                            warningCapacity = warningCapacity * 2
+                            ReDim Preserve warningRows(1 To warningCapacity)
+                            ReDim Preserve warningSFN(1 To warningCapacity)
+                            ReDim Preserve warningTypes(1 To warningCapacity)
+                            ReDim Preserve warningDesc(1 To warningCapacity)
                         End If
                         warningRows(warningCount) = j
                         warningSFN(warningCount) = CDbl(currentSFN)
                         warningTypes(warningCount) = "RXTIME"
                         warningDesc(warningCount) = "TX_SFN_est > min(RXTIME) - RXTproc + 3*sigma."
-                    Else
-                        FindConstraintViolations = numViolations
-                        Exit Function
                     End If
                 End If
             End If
@@ -527,16 +528,18 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
 
         If groupHasViolation Then
             FCV_ViolatedGroups = FCV_ViolatedGroups + 1
-            FCV_CsetCount = FCV_CsetCount + 1
-            If FCV_CsetCount = 1 Then
-                ReDim FCV_CsetStarts(1 To 1)
-                ReDim FCV_CsetEnds(1 To 1)
-                ReDim FCV_CsetSFN(1 To 1)
-            Else
-                ReDim Preserve FCV_CsetStarts(1 To FCV_CsetCount)
-                ReDim Preserve FCV_CsetEnds(1 To FCV_CsetCount)
-                ReDim Preserve FCV_CsetSFN(1 To FCV_CsetCount)
+            If FCV_CsetCount = 0 Then
+                csetCapacity = 32
+                ReDim FCV_CsetStarts(1 To csetCapacity)
+                ReDim FCV_CsetEnds(1 To csetCapacity)
+                ReDim FCV_CsetSFN(1 To csetCapacity)
+            ElseIf (FCV_CsetCount + 1) > csetCapacity Then
+                csetCapacity = csetCapacity * 2
+                ReDim Preserve FCV_CsetStarts(1 To csetCapacity)
+                ReDim Preserve FCV_CsetEnds(1 To csetCapacity)
+                ReDim Preserve FCV_CsetSFN(1 To csetCapacity)
             End If
+            FCV_CsetCount = FCV_CsetCount + 1
             FCV_CsetStarts(FCV_CsetCount) = startRow
             FCV_CsetEnds(FCV_CsetCount) = endRow
             FCV_CsetSFN(FCV_CsetCount) = CDbl(currentSFN)
@@ -550,6 +553,19 @@ NextGroup:
     Loop
 
     If numViolations2Find = 0 Then
+        If FCV_CsetCount > 0 And csetCapacity > FCV_CsetCount Then
+            ReDim Preserve FCV_CsetStarts(1 To FCV_CsetCount)
+            ReDim Preserve FCV_CsetEnds(1 To FCV_CsetCount)
+            ReDim Preserve FCV_CsetSFN(1 To FCV_CsetCount)
+        End If
+
+        If warningCount > 0 And warningCapacity > warningCount Then
+            ReDim Preserve warningRows(1 To warningCount)
+            ReDim Preserve warningSFN(1 To warningCount)
+            ReDim Preserve warningTypes(1 To warningCount)
+            ReDim Preserve warningDesc(1 To warningCount)
+        End If
+
         wsLog.Range("J4").Value = FCV_TotalGroups
         wsLog.Range("J5").Value = FCV_ViolatedGroups
         wsLog.Range("J6").Value = FCV_WarningGroups
