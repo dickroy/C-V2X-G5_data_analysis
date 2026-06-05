@@ -130,7 +130,7 @@ Public Sub TX_SFNConflictResolution( _
             If Not FCV_GetNextCsetGroup(csetStartRow, csetEndRow, csetSFN) Then Exit Do
             If csetStartRow <= lastProcessedRow Then GoTo NextPreScannedGroup
             If csetStartRow < 1 Then GoTo NextPreScannedGroup
-            If (csetStartRow + 1) > mFilteredCount Then GoTo NextPreScannedGroup
+            If csetStartRow + 1 > mFilteredCount Then GoTo NextPreScannedGroup
             If mCurrentSFN(csetStartRow) <> mCurrentSFN(csetStartRow + 1) Then GoTo NextPreScannedGroup
 
             t0 = MicroTimer_TXSFNCR()

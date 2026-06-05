@@ -759,9 +759,12 @@ Sub PickExperimentFileAndMapData()
     If fcvViolGroupCount < 0 Then
         FCV_TotalGroups = 0
         FCV_ViolatedGroups = 0
+        crPrompt = "Conflict pre-scan failed; counts unavailable." & vbCrLf & vbCrLf
+    Else
+        crPrompt = ""
     End If
 
-    crPrompt = "Num SFs with multiple TXs (Groups) = " & Format(FCV_TotalGroups, "#,##0") & vbCrLf & _
+    crPrompt = crPrompt & "Num SFs with multiple TXs (Groups) = " & Format(FCV_TotalGroups, "#,##0") & vbCrLf & _
                "Num Groups with Constraint Violations = " & Format(FCV_ViolatedGroups, "#,##0") & vbCrLf & _
                "Do you want to run Conflict Resolution?"
     crChoice = MsgBox(crPrompt, vbYesNo + vbQuestion + vbDefaultButton1, "TX_SFN Conflict Resolution")
