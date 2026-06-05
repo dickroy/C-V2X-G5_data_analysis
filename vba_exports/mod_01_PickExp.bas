@@ -95,11 +95,7 @@ Sub PickExperimentFileAndMapData()
     prevCalc = Application.Calculation
     
     Dim analysisChoice As String, msgMenu As String
-Dim crChoice As VbMsgBoxResult
-
-crChoice = MsgBox("Run TX_SFN Conflict Resolution?" & vbCrLf & _
-                  "Default: Yes", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
-runTX_SFN_CR = (crChoice <> vbNo)
+    Dim crChoice As VbMsgBoxResult
 
     msgMenu = "Select C-V2X Analysis routines to execute (e.g., 12345678):" & vbCrLf & _
           "1. GenerateLatencyAnalysis" & vbCrLf & _
@@ -756,12 +752,25 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
     Dim cwlsSeconds As Double
     cwlsSeconds = 0
+
+    FCV_title = "Group Analysis BEFORE Conflict Resolution"
+    FCV_out_col = "A"
+    Call FindConstraintViolations(0)
+
+    crChoice = MsgBox("Run TX_SFN Conflict Resolution?" & vbCrLf & _
+                      "Default: Yes", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
+    runTX_SFN_CR = (crChoice <> vbNo)
     
     If runTX_SFN_CR Then
         TX_SFNConflictResolution data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, _
                                idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, _
                                activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, _
                                txBitmap, bitmapLen, cwlsSeconds
+
+        targetTable.DataBodyRange.Value = data
+        FCV_title = "Group Analysis AFTER Conflict Resolution"
+        FCV_out_col = "J"
+        Call FindConstraintViolations(0)
     End If
 
    ' 7. FINAL CALCULATIONS & WRITEBACK
