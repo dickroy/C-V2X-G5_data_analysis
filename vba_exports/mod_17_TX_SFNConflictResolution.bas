@@ -112,6 +112,10 @@ Public Sub TX_SFNConflictResolution( _
     Dim t0 As Double
     Dim conflictStart As Long
     Dim poolMoved As Boolean
+    Dim csetStartRow As Long
+    Dim csetEndRow As Long
+    Dim csetSFN As Double
+    Dim lastProcessedRow As Long
 
     startTime = MicroTimer_TXSFNCR()
     InitializeContext data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, txBitmap, bitmapLen
@@ -119,16 +123,38 @@ Public Sub TX_SFNConflictResolution( _
     PrepareRowDerivedData
     InitializeOutputBuffer
 
-    Do
-        t0 = MicroTimer_TXSFNCR()
-        conflictStart = FindNextConflictStart()
-        If conflictStart <= 0 Then Exit Do
-        BuildPoolFromConflictStart conflictStart
-        poolMoved = ResolveEntirePool()
-        WriteResolvedPoolToOutput
-        If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
-        mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
-    Loop
+    If FCV_HasPrescan And FCV_FilteredCount = filteredCount Then
+        FCV_ResetCsetCursor
+        lastProcessedRow = 0
+        Do
+            If Not FCV_GetNextCsetGroup(csetStartRow, csetEndRow, csetSFN) Then Exit Do
+            If csetStartRow <= lastProcessedRow Then GoTo NextPreScannedGroup
+            If csetStartRow < 1 Or csetStartRow >= mFilteredCount Then GoTo NextPreScannedGroup
+            If mCurrentSFN(csetStartRow) <> mCurrentSFN(csetStartRow + 1) Then GoTo NextPreScannedGroup
+
+            t0 = MicroTimer_TXSFNCR()
+            BuildPoolFromConflictStart csetStartRow
+            poolMoved = ResolveEntirePool()
+            WriteResolvedPoolToOutput
+            If mPoolCount > 0 Then
+                lastProcessedRow = mPoolRows(mPoolCount)
+                mScanPos = lastProcessedRow + 1
+            End If
+            mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
+NextPreScannedGroup:
+        Loop
+    Else
+        Do
+            t0 = MicroTimer_TXSFNCR()
+            conflictStart = FindNextConflictStart()
+            If conflictStart <= 0 Then Exit Do
+            BuildPoolFromConflictStart conflictStart
+            poolMoved = ResolveEntirePool()
+            WriteResolvedPoolToOutput
+            If mPoolCount > 0 Then mScanPos = mPoolRows(mPoolCount) + 1
+            mFindConflictSeconds = mFindConflictSeconds + (MicroTimer_TXSFNCR() - t0)
+        Loop
+    End If
 
     t0 = MicroTimer_TXSFNCR()
     WriteUnwrittenRowsToOutput
