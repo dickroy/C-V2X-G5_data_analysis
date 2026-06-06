@@ -380,6 +380,7 @@ Private Function ResolveEntirePool() As Boolean
     Dim t As Double
 
     t = MicroTimer_TXSFNCR()
+    ResolveEntirePool = False
     If mPoolCestCount <= 0 Then Exit Function
     orderedCests = GetOrderedCestIndexes()
     For i = LBound(orderedCests) To UBound(orderedCests)
@@ -919,8 +920,16 @@ Private Function IsAllOnesBitmap(ByVal txBitmap As String) As Boolean
 End Function
 
 Private Function GetNamedLong(ByVal nameText As String) As Long
+    Dim resolvedValue As Variant
     On Error Resume Next
-    GetNamedLong = CLng(Evaluate(ThisWorkbook.Names(nameText).RefersTo))
+    resolvedValue = Evaluate(ThisWorkbook.Names(nameText).RefersTo)
+    If Err.Number <> 0 Or IsError(resolvedValue) Or Not IsNumeric(resolvedValue) Then
+        If DEBUG_TXSFNCR Then Debug.Print "GetNamedLong fallback:", nameText
+        GetNamedLong = 0
+        Err.Clear
+    Else
+        GetNamedLong = CLng(resolvedValue)
+    End If
     On Error GoTo 0
 End Function
 

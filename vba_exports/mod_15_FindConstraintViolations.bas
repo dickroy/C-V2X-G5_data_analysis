@@ -212,7 +212,7 @@ Public Function FCV(ByVal numViolations2Find As Long, Optional ByVal writeReport
     Do While i <= UBound(data, 1)
         currentSFN = data(i, idxSFN)
 
-        If IsEmpty(currentSFN) Or Trim$(CStr(currentSFN)) = "" Or Val(currentSFN) = 0 Then
+        If IsEmpty(currentSFN) Or Trim$(CStr(currentSFN)) = "" Then
             i = i + 1
             GoTo NextGroup
         End If
