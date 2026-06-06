@@ -278,6 +278,7 @@ Private Function ValidateInputMonotoneTXSFN() As Boolean
     For r = 2 To mFilteredCount
         curVal = CLng(mData(r, mIdxSFNCol))
         If curVal < prevVal Then
+            If DEBUG_TXSFNCR Then Debug.Print "Non-monotone TX_SFN_est input at row " & r & ": " & curVal & " < " & prevVal
             ValidateInputMonotoneTXSFN = False
             Exit Function
         End If

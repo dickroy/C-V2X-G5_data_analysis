@@ -759,6 +759,7 @@ Sub PickExperimentFileAndMapData()
         crUnresolvedCsets = GetTXSFNCRUnresolvedCsetList()
         crRemainingCsets = GetTXSFNCRFinalCsetList()
 
+        ' Rebuild the SFN map after CR so final TXperSFN and group messaging reflect the resolved SFNs.
         Set sfnMap = CreateObject("Scripting.Dictionary")
         For r = 1 To filteredCount
             AddToMap r, CLng(data(r, idxSFNCol))

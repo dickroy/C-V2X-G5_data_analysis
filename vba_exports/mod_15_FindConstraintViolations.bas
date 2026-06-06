@@ -9,6 +9,10 @@ Option Explicit
 '   4) TX timing: TX_SFN_est >= ROUND(TXQTIME + TXTproc) - maxTX_SFN_est_decrement
 '   5) RX timing: TX_SFN_est <= min(RXTIME) - RXTproc + 3*sigma
 '
+' Severity model in v1.01:
+'   - TX/RX uniqueness and capacity findings are violations.
+'   - TXTIME and RXTIME findings are warnings.
+'
 ' Target: Excel 2024 LTSC
 
 Private Const FCV_LOG_SHEET As String = "TX_SFN Conflict Resolution Log"
