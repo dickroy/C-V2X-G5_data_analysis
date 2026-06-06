@@ -51,7 +51,7 @@ Private nudgeCount As Long
 Public dictTXStations As Object
 Public dictRXStations As Object
 Public runTX_SFN_CR As Boolean
-Private Const PICKEXP_LOG_SHEET As String = "TX_SFN Conflict Resolution Log"
+Private Const CONFLICT_RESOLUTION_LOG_SHEET As String = "TX_SFN Conflict Resolution Log"
 
 
 Private Function MicroTimer() As Double
@@ -568,7 +568,7 @@ Sub PickExperimentFileAndMapData()
                     currentTxVals = dictVC(CStr(vKey))
                     
                     Dim txPromptMsg As String
-                    txPromptMsg = "Review plots rendered on the active '" & PICKEXP_LOG_SHEET & "' sheet background." & vbCrLf & vbCrLf & _
+                    txPromptMsg = "Review plots rendered on the active '" & CONFLICT_RESOLUTION_LOG_SHEET & "' sheet background." & vbCrLf & vbCrLf & _
                                   "Current TX parameters for Vendor " & vKey & ":" & vbCrLf & _
                                   "Mean (Tproc): " & currentTxVals(0) & " ms" & vbCrLf & _
                                   "Sigma: " & currentTxVals(1) & " ms" & vbCrLf & vbCrLf & _
@@ -620,7 +620,7 @@ Sub PickExperimentFileAndMapData()
                         currRxSig = IIf(dictP2Sigma.Exists(rKey), dictP2Sigma(rKey), 0#)
                         
                         Dim rxPromptMsg As String
-                        rxPromptMsg = "Review plots rendered on the active '" & PICKEXP_LOG_SHEET & "' sheet background." & vbCrLf & vbCrLf & _
+                        rxPromptMsg = "Review plots rendered on the active '" & CONFLICT_RESOLUTION_LOG_SHEET & "' sheet background." & vbCrLf & vbCrLf & _
                                       "Current RX parameters for PDU " & currentFilterPdu & "B (Vendor " & vKey & "):" & vbCrLf & _
                                       "Mean (Tproc): " & currRxMean & " ms" & vbCrLf & _
                                       "Sigma: " & currRxSig & " ms" & vbCrLf & vbCrLf & _
@@ -867,11 +867,11 @@ End Sub
 
 Private Function GetPickExpLogSheet() As Worksheet
     On Error Resume Next
-    Set GetPickExpLogSheet = ThisWorkbook.Sheets(PICKEXP_LOG_SHEET)
+    Set GetPickExpLogSheet = ThisWorkbook.Sheets(CONFLICT_RESOLUTION_LOG_SHEET)
     On Error GoTo 0
     If GetPickExpLogSheet Is Nothing Then
         Set GetPickExpLogSheet = ThisWorkbook.Sheets.Add(Before:=ThisWorkbook.Sheets("ExpResults"))
-        GetPickExpLogSheet.Name = PICKEXP_LOG_SHEET
+        GetPickExpLogSheet.Name = CONFLICT_RESOLUTION_LOG_SHEET
     End If
 End Function
 

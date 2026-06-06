@@ -15,7 +15,7 @@ Option Explicit
 '
 ' Target: Excel 2024 LTSC
 
-Private Const FCV_LOG_SHEET As String = "TX_SFN Conflict Resolution Log"
+Private Const CONFLICT_RESOLUTION_LOG_SHEET As String = "TX_SFN Conflict Resolution Log"
 
 Private mLastFCVViolationCount As Long
 Private mLastFCVWarningCount As Long
@@ -216,6 +216,7 @@ Public Function FCV(ByVal numViolations2Find As Long, Optional ByVal writeReport
     Do While i <= UBound(data, 1)
         currentSFN = data(i, idxSFN)
 
+        ' In FCV v1.01, SFN 0 is treated as valid data; only blank/unset SFNs are skipped.
         If IsEmpty(currentSFN) Or Trim$(CStr(currentSFN)) = "" Then
             i = i + 1
             GoTo NextGroup
@@ -395,11 +396,11 @@ End Function
 
 Private Function GetFCVLogSheet() As Worksheet
     On Error Resume Next
-    Set GetFCVLogSheet = ThisWorkbook.Worksheets(FCV_LOG_SHEET)
+    Set GetFCVLogSheet = ThisWorkbook.Worksheets(CONFLICT_RESOLUTION_LOG_SHEET)
     On Error GoTo 0
     If GetFCVLogSheet Is Nothing Then
         Set GetFCVLogSheet = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
-        GetFCVLogSheet.Name = FCV_LOG_SHEET
+        GetFCVLogSheet.Name = CONFLICT_RESOLUTION_LOG_SHEET
     End If
 End Function
 
