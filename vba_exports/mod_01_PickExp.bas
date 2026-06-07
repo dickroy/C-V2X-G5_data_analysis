@@ -51,6 +51,7 @@ Private nudgeCount As Long
 Public dictTXStations As Object
 Public dictRXStations As Object
 Public runTX_SFN_CR As Boolean
+Private Const CONFLICT_RESOLUTION_LOG_SHEET As String = "TX_SFN Conflict Resolution Log"
 
 
 Private Function MicroTimer() As Double
@@ -95,11 +96,11 @@ Sub PickExperimentFileAndMapData()
     prevCalc = Application.Calculation
     
     Dim analysisChoice As String, msgMenu As String
-Dim crChoice As VbMsgBoxResult
+    Dim crChoice As VbMsgBoxResult
 
-crChoice = MsgBox("Run TX_SFN Conflict Resolution?" & vbCrLf & _
-                  "Default: Yes", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
-runTX_SFN_CR = (crChoice <> vbNo)
+    crChoice = MsgBox("Run TX_SFN Conflict Resolution?" & vbCrLf & _
+                      "Default: Yes", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
+    runTX_SFN_CR = (crChoice <> vbNo)
 
     msgMenu = "Select C-V2X Analysis routines to execute (e.g., 12345678):" & vbCrLf & _
           "1. GenerateLatencyAnalysis" & vbCrLf & _
@@ -450,20 +451,10 @@ runTX_SFN_CR = (crChoice <> vbNo)
     startTime = MicroTimer()
 
     Dim targetR As Long
-    Dim txParamsChanged As Boolean
-    Dim txLoopChanged As Boolean
-    Dim continueLoop As Boolean
-    Dim linRegCompleted As Boolean
-    Dim linRegNeedsRerun As Boolean
-    Dim currentTX As String
     Dim prelimRendered As Boolean
+    Dim wsLogSheet As Worksheet
 
-    continueLoop = True
     prelimRendered = False
-
-    Do While continueLoop
-        txLoopChanged = False
-        linRegNeedsRerun = False
 
         ' -------------------------------
         ' 1) INITIAL SFN ESTIMATION PASS
@@ -479,14 +470,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ' 2) PRELIMINARY RX/TX LATENCY OUTPUT FIRST
         ' ------------------------------------------------
         If Not prelimRendered Then
-            Dim wsLogSheet As Worksheet
-            On Error Resume Next
-            Set wsLogSheet = ThisWorkbook.Sheets("TX_SFN est Log")
-            If wsLogSheet Is Nothing Then
-                Set wsLogSheet = ThisWorkbook.Sheets.Add(Before:=ThisWorkbook.Sheets("ExpResults"))
-                wsLogSheet.Name = "TX_SFN est Log"
-            End If
-            On Error GoTo 0
+            Set wsLogSheet = GetPickExpLogSheet()
             prelimRendered = True
         End If
 
@@ -498,13 +482,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
      
     
-    On Error Resume Next
-    Set wsLogSheet = ThisWorkbook.Sheets("TX_SFN est Log")
-    If wsLogSheet Is Nothing Then
-        Set wsLogSheet = ThisWorkbook.Sheets.Add(Before:=ThisWorkbook.Sheets("ExpResults"))
-        wsLogSheet.Name = "TX_SFN est Log"
-    End If
-    On Error GoTo 0
+    Set wsLogSheet = GetPickExpLogSheet()
     
     Dim oldCht As ChartObject
     Dim pduKeys As Variant
@@ -590,7 +568,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
                     currentTxVals = dictVC(CStr(vKey))
                     
                     Dim txPromptMsg As String
-                    txPromptMsg = "Review plots rendered on the active 'TX_SFN est Log' sheet background." & vbCrLf & vbCrLf & _
+                    txPromptMsg = "Review plots rendered on the active '" & CONFLICT_RESOLUTION_LOG_SHEET & "' sheet background." & vbCrLf & vbCrLf & _
                                   "Current TX parameters for Vendor " & vKey & ":" & vbCrLf & _
                                   "Mean (Tproc): " & currentTxVals(0) & " ms" & vbCrLf & _
                                   "Sigma: " & currentTxVals(1) & " ms" & vbCrLf & vbCrLf & _
@@ -642,7 +620,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
                         currRxSig = IIf(dictP2Sigma.Exists(rKey), dictP2Sigma(rKey), 0#)
                         
                         Dim rxPromptMsg As String
-                        rxPromptMsg = "Review plots rendered on the active 'TX_SFN est Log' sheet background." & vbCrLf & vbCrLf & _
+                        rxPromptMsg = "Review plots rendered on the active '" & CONFLICT_RESOLUTION_LOG_SHEET & "' sheet background." & vbCrLf & vbCrLf & _
                                       "Current RX parameters for PDU " & currentFilterPdu & "B (Vendor " & vKey & "):" & vbCrLf & _
                                       "Mean (Tproc): " & currRxMean & " ms" & vbCrLf & _
                                       "Sigma: " & currRxSig & " ms" & vbCrLf & vbCrLf & _
@@ -755,13 +733,37 @@ runTX_SFN_CR = (crChoice <> vbNo)
     filteredCount = UBound(data, 1)
     
     Dim cwlsSeconds As Double
+    Dim fcvViolationsBefore As Long, fcvWarningsBefore As Long, fcvGroupsBefore As Long
+    Dim fcvViolationsAfter As Long, fcvWarningsAfter As Long, fcvGroupsAfter As Long
+    Dim crOriginalGroups As Long, crResolvedGroups As Long, crRemainingGroups As Long, crRemainingWarnings As Long
+    Dim crOriginalCsets As String, crResolvedCsets As String, crUnresolvedCsets As String, crRemainingCsets As String
     cwlsSeconds = 0
     
     If runTX_SFN_CR Then
+        Application.StatusBar = "Running FCV before TX_SFN conflict resolution..."
+        fcvViolationsBefore = FCV(0, False)
+        fcvWarningsBefore = GetLastFCVWarningCount()
+        fcvGroupsBefore = GetLastFCVGroupCount()
+
         TX_SFNConflictResolution data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, _
                                idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, _
                                activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, _
                                txBitmap, bitmapLen, cwlsSeconds
+
+        crOriginalGroups = GetTXSFNCROriginalConflictCount()
+        crResolvedGroups = GetTXSFNCRResolvedCsetCount()
+        crRemainingGroups = GetTXSFNCRFinalConflictCount()
+        crRemainingWarnings = GetTXSFNCRRemainingViolationCount()
+        crOriginalCsets = GetTXSFNCROriginalCsetList()
+        crResolvedCsets = GetTXSFNCRResolvedCsetList()
+        crUnresolvedCsets = GetTXSFNCRUnresolvedCsetList()
+        crRemainingCsets = GetTXSFNCRFinalCsetList()
+
+        ' Rebuild the SFN map after CR so final TXperSFN and group messaging reflect the resolved SFNs.
+        Set sfnMap = CreateObject("Scripting.Dictionary")
+        For r = 1 To filteredCount
+            AddToMap r, CLng(data(r, idxSFNCol))
+        Next r
     End If
 
    ' 7. FINAL CALCULATIONS & WRITEBACK
@@ -802,11 +804,18 @@ runTX_SFN_CR = (crChoice <> vbNo)
  Next r
  targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
     targetTable.DataBodyRange.Value = data
-    
+     
     If Not targetTable.DataBodyRange Is Nothing Then
         filteredCount = targetTable.DataBodyRange.Rows.Count
         targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
     End If
+
+   If runTX_SFN_CR Then
+       Application.StatusBar = "Running FCV after TX_SFN conflict resolution..."
+       fcvViolationsAfter = FCV(0, True)
+       fcvWarningsAfter = GetLastFCVWarningCount()
+       fcvGroupsAfter = GetLastFCVGroupCount()
+   End If
     
     Application.Calculation = prevCalc
     Application.ScreenUpdating = True
@@ -825,7 +834,21 @@ runTX_SFN_CR = (crChoice <> vbNo)
                  "HARQDetection Exec Time: " & Format(harqDetectSeconds, "0.000") & " s" & vbCrLf & _
                  "HARQSplit Exec Time: " & Format(harqSplitSeconds, "0.000") & " s" & vbCrLf & _
                  "TX_SFNConflictResolution Exec Time: " & Format(cwlsSeconds, "0.000") & " s" & vbCrLf & _
-                 "Pre-HARQ Mapping Exec Time: " & Format(totalProcTime, "0.000") & " s" & vbCrLf & vbCrLf & _
+                 "Pre-HARQ Mapping Exec Time: " & Format(totalProcTime, "0.000") & " s" & vbCrLf
+
+    If runTX_SFN_CR Then
+        summaryMsg = summaryMsg & _
+                     "FCV Before CR: " & fcvViolationsBefore & " violations, " & fcvWarningsBefore & " warnings across " & fcvGroupsBefore & " groups" & vbCrLf & _
+                     "CR Groups: " & crOriginalGroups & " original, " & crResolvedGroups & " resolved, " & crRemainingGroups & " remaining" & vbCrLf & _
+                     "CR Cset List: " & FormatSummaryList(crOriginalCsets) & vbCrLf & _
+                     "Resolved Csets: " & FormatSummaryList(crResolvedCsets) & vbCrLf & _
+                     "Unresolved Csets: " & FormatSummaryList(crUnresolvedCsets) & vbCrLf & _
+                     "Remaining Csets: " & FormatSummaryList(crRemainingCsets) & vbCrLf & _
+                     "Remaining CR Warnings: " & crRemainingWarnings & vbCrLf & _
+                     "FCV After CR: " & fcvViolationsAfter & " violations, " & fcvWarningsAfter & " warnings across " & fcvGroupsAfter & " groups" & vbCrLf
+    End If
+
+    summaryMsg = summaryMsg & vbCrLf & _
                  "--- SUB-ROUTINE EXECUTION METRICS ---" & vbCrLf
                  
     If perfLog.Count > 0 Then
@@ -841,6 +864,24 @@ runTX_SFN_CR = (crChoice <> vbNo)
                  
     MsgBox summaryMsg, vbInformation, "Pipeline Performance Monitor"
 End Sub
+
+Private Function GetPickExpLogSheet() As Worksheet
+    On Error Resume Next
+    Set GetPickExpLogSheet = ThisWorkbook.Sheets(CONFLICT_RESOLUTION_LOG_SHEET)
+    On Error GoTo 0
+    If GetPickExpLogSheet Is Nothing Then
+        Set GetPickExpLogSheet = ThisWorkbook.Sheets.Add(Before:=ThisWorkbook.Sheets("ExpResults"))
+        GetPickExpLogSheet.Name = CONFLICT_RESOLUTION_LOG_SHEET
+    End If
+End Function
+
+Private Function FormatSummaryList(ByVal listText As String) As String
+    If Trim$(listText) = "" Then
+        FormatSummaryList = "(none)"
+    Else
+        FormatSummaryList = listText
+    End If
+End Function
 
 Private Function RenderVendorPreWlsSection(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, pduKeys As Variant, startRowPos As Long) As Long
     vendorID = Trim$(CStr(vendorID))
