@@ -1,7 +1,8 @@
 Attribute VB_Name = "mod_15_FindConstraintViolations"
 Option Explicit
 
-' Bookmark: FindConstraintViolations_v21
+' Bookmark: FindConstraintViolations_v2.0.0
+' Version: V2.0.0
 ' Status: in-memory validation:
 '   1) TX_ID uniqueness within TX_SFN_est group
 '   2) TX/RX overlap within TX_SFN_est group
@@ -91,6 +92,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim dictRXSigma As Object
 
     Dim numViolations As Long, writeRow As Long
+    Dim NumConstraints As Long, NumWarnings As Long
     Dim groupHasViolation As Boolean
     Dim baseOutCol As Long, txTableCol As Long, rxTableColStart As Long
     Dim txIDs() As Long, rxStationIDs() As Long
@@ -107,6 +109,8 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim rxThreshold As Double
 
     On Error GoTo CleanFail
+    NumConstraints = 3
+    NumWarnings = 1
 
     Set wsExp = ThisWorkbook.Worksheets("ExpResults")
     Set tbl = wsExp.ListObjects("ExpResultsTable")
@@ -265,9 +269,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         wsLog.Cells(5, baseOutCol + 1).Value = ""
         wsLog.Cells(6, baseOutCol).Value = "Num SFs with multiple TXs (Groups):"
         wsLog.Cells(6, baseOutCol + 1).Value = 0
-        wsLog.Cells(7, baseOutCol).Value = "Num Groups with Constraint Violations:"
+        wsLog.Cells(7, baseOutCol).Value = "Num Groups with Constraint Violations (Catalog IDs 1-" & NumConstraints & "):"
         wsLog.Cells(7, baseOutCol + 1).Value = 0
-        wsLog.Cells(8, baseOutCol).Value = "Warning Groups:"
+        wsLog.Cells(8, baseOutCol).Value = "Warning Groups (Catalog IDs 1-" & NumWarnings & "):"
         wsLog.Cells(8, baseOutCol + 1).Value = 0
         wsLog.Cells(9, baseOutCol).Value = "Row"
         wsLog.Cells(9, baseOutCol + 1).Value = "SFN"
@@ -345,7 +349,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
 
     writeRow = 10
     numViolations = 0
-    Application.StatusBar = "FindConstraintViolations v21: scanning ExpResultsTable..."
+    Application.StatusBar = "FindConstraintViolations V2.0.0: scanning ExpResultsTable..."
 
     i = 1
     Do While i <= UBound(data, 1)
@@ -485,7 +489,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
             If numViolations2Find = 0 Then
                 wsLog.Cells(writeRow, baseOutCol).Value = startRow
                 wsLog.Cells(writeRow, baseOutCol + 1).Value = currentSFN
-                wsLog.Cells(writeRow, baseOutCol + 2).Value = "TX-TX"
+                wsLog.Cells(writeRow, baseOutCol + 2).Value = 1
                 wsLog.Cells(writeRow, baseOutCol + 3).Value = "TX_ID values are not unique within this TX_SFN_est group."
                 writeRow = writeRow + 1
             Else
@@ -507,7 +511,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
             If numViolations2Find = 0 Then
                 wsLog.Cells(writeRow, baseOutCol).Value = startRow
                 wsLog.Cells(writeRow, baseOutCol + 1).Value = currentSFN
-                wsLog.Cells(writeRow, baseOutCol + 2).Value = "TX/RX"
+                wsLog.Cells(writeRow, baseOutCol + 2).Value = 2
                 wsLog.Cells(writeRow, baseOutCol + 3).Value = "Merged TX + RX station list is not unique within this TX_SFN_est group."
                 writeRow = writeRow + 1
             Else
@@ -523,7 +527,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
                 If numViolations2Find = 0 Then
                     wsLog.Cells(writeRow, baseOutCol).Value = startRow
                     wsLog.Cells(writeRow, baseOutCol + 1).Value = currentSFN
-                    wsLog.Cells(writeRow, baseOutCol + 2).Value = "CAPACITY"
+                    wsLog.Cells(writeRow, baseOutCol + 2).Value = 3
                     wsLog.Cells(writeRow, baseOutCol + 3).Value = "St " & st & " sum " & capacitySum(st) & " > " & maxSch
                     writeRow = writeRow + 1
                 Else
