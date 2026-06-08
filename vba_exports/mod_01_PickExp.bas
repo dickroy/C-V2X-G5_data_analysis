@@ -548,7 +548,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
         wsLogSheet.Range("A1").Font.Bold = True
         wsLogSheet.Range("A1").Font.Size = 14
         
-        runningRowPos = 4
+        runningRowPos = 4 + logRowOffset
         finalChartRowBottom = runningRowPos + 4
         
         For vendorIdx = LBound(vendorKeys) To UBound(vendorKeys)
@@ -1068,7 +1068,7 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
                 .Format.Line.ForeColor.RGB = RGB(255, 0, 0)
                 .Format.Line.Weight = 1.5
             End With
-            baseTprocSeriesIndex = .SeriesCollection.count
+            baseTprocSeriesIndex = .SeriesCollection.Count
         End If
         
         If targetMu > 0 And targetSigma > 0 And (targetMu - targetSigma) >= bMin Then
@@ -1081,7 +1081,7 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
                 .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
                 .Format.Line.DashStyle = msoLineDash
             End With
-            baseSigmaMinusSeriesIndex = .SeriesCollection.count
+            baseSigmaMinusSeriesIndex = .SeriesCollection.Count
         End If
         
         If targetMu > 0 And targetSigma > 0 And (targetMu + targetSigma) <= bMax Then
@@ -1094,7 +1094,7 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
                 .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
                 .Format.Line.DashStyle = msoLineDash
             End With
-            baseSigmaPlusSeriesIndex = .SeriesCollection.count
+            baseSigmaPlusSeriesIndex = .SeriesCollection.Count
         End If
         
         If Not isTXBlock Then
@@ -1197,7 +1197,7 @@ Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCo
         On Error Resume Next
         If .HasLegend Then
             Dim legendEntryCount As Long
-            legendEntryCount = .Legend.LegendEntries.count
+            legendEntryCount = .Legend.LegendEntries.Count
             For i = legendEntryCount To 1 Step -1
                 If i <> 1 And i <> 2 Then
                     If i <> baseTprocSeriesIndex And i <> baseSigmaMinusSeriesIndex And i <> baseSigmaPlusSeriesIndex Then
