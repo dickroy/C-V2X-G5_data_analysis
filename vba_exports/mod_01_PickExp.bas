@@ -2,13 +2,17 @@ Attribute VB_Name = "mod_01_PickExp"
 Option Explicit
 
 ' Module Name: PickExp
-' Status: V61.0.25 - dictA2P stores both NumSubchans and PDU length
+' Status: V2.0.1 - dictA2P stores both NumSubchans and PDU length
 ' Target: Excel 2024 LTSC
 '
-' Key changes from V61.0.20:
+' Key changes
 '   - dictA2P now stores Array(NtargetR umSubchans, PDU_Length)
 '   - all dictA2P reads updated to use element(1) for PDU length
 '   - HARQ-first + external CWLS flow preserved
+' Many functions restored - MSG_GEN_TIME calculation repaired and updated
+'    to include CAM_GEN_DTIME as well as IVI_TIMESTAMP and clean up CAM code
+' ExpResults metadata output to ExpResults Log added
+'
 
 #If VBA7 Then
     Private Declare PtrSafe Function QueryPerformanceCounter Lib "kernel32" (ByRef lpPerformanceCount As Currency) As Long
@@ -78,7 +82,13 @@ Sub PickExperimentFileAndMapData()
     Dim c As Long
     Dim startTime As Double, totalProcTime As Double, pipelineStart As Double, pipelineTime As Double
     Dim iviVal As Double
+    Dim camVal As Double
+    Dim txqVal As Double
     Dim genTime As Double
+    Dim groupList As Object
+    Dim DoWLS As Boolean
+    Dim idxIVITimestamp As Long
+    Dim idxCamGenDtime As Long
     
     Dim perfLog As Object
     Set perfLog = CreateObject("Scripting.Dictionary")
@@ -95,11 +105,7 @@ Sub PickExperimentFileAndMapData()
     prevCalc = Application.Calculation
     
     Dim analysisChoice As String, msgMenu As String
-Dim crChoice As VbMsgBoxResult
-
-crChoice = MsgBox("Run TX_SFN Conflict Resolution?" & vbCrLf & _
-                  "Default: Yes", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
-runTX_SFN_CR = (crChoice <> vbNo)
+    Dim crChoice As VbMsgBoxResult
 
     msgMenu = "Select C-V2X Analysis routines to execute (e.g., 12345678):" & vbCrLf & _
           "1. GenerateLatencyAnalysis" & vbCrLf & _
@@ -126,12 +132,19 @@ runTX_SFN_CR = (crChoice <> vbNo)
 
     Dim gnPeriod As Double
     Dim gnFirstTX As Double
+    Dim camPeriod As Double
+    Dim camFirstTX As Double
     Dim leapSecs As Double
     
     On Error Resume Next
     gnPeriod = Evaluate(ThisWorkbook.Names("GN_Time_32_bit_period__ms").RefersTo)
     leapSecs = Evaluate(ThisWorkbook.Names("Adj._for_leap_secs__ms").RefersTo)
     gnFirstTX = CDbl(ThisWorkbook.Names("GN_Time_of_First_TX__ms").RefersToRange.Value)
+    On Error GoTo 0
+    
+    On Error Resume Next
+    camPeriod = CDbl(ThisWorkbook.Names("CAM_Generation_Time_16_bit_period__ms").RefersToRange.Value)
+    camFirstTX = CDbl(ThisWorkbook.Names("Adj._CAM_Time_of_TXQTIME_Epoch__ms").RefersToRange.Value)
     On Error GoTo 0
 
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
@@ -167,6 +180,62 @@ runTX_SFN_CR = (crChoice <> vbNo)
         endRow = totalInFile + 1
     End If
     rowsToLoad = (endRow - startRow) + 1
+    
+    Dim logWs As Worksheet
+    Dim expWs As Worksheet
+    Dim logPath As String
+    Dim tzName As String
+    Dim tzOffset As String
+    Dim tzString As String
+    
+    Set expWs = ThisWorkbook.Sheets("ExpResults")
+    logPath = srcWB.FullName
+    
+    ' Build a timezone label for the local machine
+    On Error Resume Next
+    tzName = Application.International(xlCountrySetting)
+    On Error GoTo 0
+    
+    tzOffset = Format(Now - DateAdd("h", Hour(Now), Date), "hh:nn")
+    If Left$(tzOffset, 1) = "-" Then
+        tzString = "UTC" & tzOffset
+    Else
+        tzString = "UTC+" & tzOffset
+    End If
+    
+    On Error Resume Next
+    Set logWs = ThisWorkbook.Sheets("ExpResults Log")
+    On Error GoTo 0
+    
+    If logWs Is Nothing Then
+        Set logWs = ThisWorkbook.Sheets.Add(After:=expWs)
+        logWs.Name = "ExpResults Log"
+    End If
+    
+    With logWs
+        .Cells.Clear
+        
+        .Range("A1").Value = "ExpResults Log"
+        .Range("A1").Font.Bold = True
+        .Range("A1").Font.Size = 14
+        
+        .Range("A3").Value = "Results File Loaded"
+        .Range("B3").Value = logPath
+        
+        .Range("A4").Value = "Date Loaded"
+        .Range("B4").Value = Format(Date, "m/d/yyyy")
+        
+        .Range("A5").Value = "Time Loaded"
+        .Range("B5").Value = Format(Time, "hh:nn:ss") & " " & tzString
+        
+        .Range("A6").Value = "Number of Rows Loaded"
+        .Range("B6").Value = rowsToLoad
+        
+        .Range("A7").Value = "Range of Rows Loaded"
+        .Range("B7").Value = startRow & " to " & endRow
+        
+        .Range("A3:B7").HorizontalAlignment = xlLeft
+    End With
 
     Set targetSheet = ThisWorkbook.Sheets("ExpResults")
     Set targetTable = targetSheet.ListObjects("ExpResultsTable")
@@ -245,7 +314,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     kIdx = 0
     
     Dim vTxKey As Variant
-    For Each vTxKey In uniqueTXs.Keys
+    For Each vTxKey In uniqueTXs.keys
         sortedTXKeys(kIdx) = CStr(vTxKey)
         kIdx = kIdx + 1
     Next vTxKey
@@ -417,6 +486,12 @@ runTX_SFN_CR = (crChoice <> vbNo)
         idxGN = .ListColumns("GN_TST").Index
         idxRxCnt = .ListColumns("RX_COUNT").Index
         idxTotLat = .ListColumns("AVG_TOTAL_LATENCY").Index
+        idxIVITimestamp = 0
+        idxCamGenDtime = 0
+        On Error Resume Next
+        idxIVITimestamp = .ListColumns("IVI_TIMESTAMP").Index
+        idxCamGenDtime = .ListColumns("CAM_GEN_DTIME").Index
+        On Error GoTo 0
         
         ReDim rxDataColIdx(1 To activeRxCount)
         For i = 1 To activeRxCount
@@ -427,7 +502,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     LoadDictionariesFromThisWorkbook
     
     Dim mapK As Variant
-    For Each mapK In dictS2V.Keys
+    For Each mapK In dictS2V.keys
         uniqueVendors(dictS2V(mapK)) = True
     Next mapK
     
@@ -460,6 +535,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
 
     continueLoop = True
     prelimRendered = False
+    DoWLS = False
 
     Do While continueLoop
         txLoopChanged = False
@@ -469,10 +545,45 @@ runTX_SFN_CR = (crChoice <> vbNo)
         ' 1) INITIAL SFN ESTIMATION PASS
         ' -------------------------------
         Set sfnMap = CreateObject("Scripting.Dictionary")
+        Set groupList = CreateObject("Scripting.Dictionary")
+
         For targetR = 1 To filteredCount
-            GetSingleRowWLSCost targetR, 0
-            ProcessInitialEstimation targetR
+            If DoWLS Then GetSingleRowWLSCost targetR, 0
+            Estimate_TX_SFN targetR
+
+            ' default blank
+            data(targetR, idxGen) = vbNullString
+
+            ' overwrite from IVI_TIMESTAMP if present and valid
+            If srcCols.Exists("IVI_TIMESTAMP") Then
+                If IsNumeric(srcData(targetR, CLng(srcCols("IVI_TIMESTAMP")))) Then
+                    iviVal = CDbl(srcData(targetR, CLng(srcCols("IVI_TIMESTAMP"))))
+                    If iviVal > -1 Then
+                        genTime = (DblMod(iviVal * 1000, gnPeriod) - gnFirstTX - leapSecs)
+                        If genTime < 0 Then genTime = genTime + gnPeriod
+                        data(targetR, idxGen) = genTime
+                    End If
+                End If
+            End If
+
+            ' overwrite from CAM_GEN_DTIME if present and valid
+            If srcCols.Exists("CAM_GEN_DTIME") Then
+                If IsNumeric(srcData(targetR, CLng(srcCols("CAM_GEN_DTIME")))) Then
+                    camVal = CDbl(srcData(targetR, CLng(srcCols("CAM_GEN_DTIME"))))
+                    If camVal > -1 Then
+                        If srcCols.Exists("TXQTIME") Then
+                            If IsNumeric(srcData(targetR, CLng(srcCols("TXQTIME")))) Then
+                                txqVal = CDbl(srcData(targetR, CLng(srcCols("TXQTIME"))))
+                                data(targetR, idxGen) = camVal + _
+                                    (camPeriod * Int((txqVal - camVal + camFirstTX) / camPeriod)) - camFirstTX
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+
             AddToMap targetR, CLng(data(targetR, idxSFNCol))
+            groupList(CStr(data(targetR, idxSFNCol))) = True
         Next targetR
 
         ' ------------------------------------------------
@@ -508,7 +619,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     
     Dim oldCht As ChartObject
     Dim pduKeys As Variant
-    pduKeys = uniquePduSizes.Keys
+    pduKeys = uniquePduSizes.keys
     
     Dim pduIdx As Long
     Dim runningRowPos As Long
@@ -528,7 +639,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
     Set loTxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("VendorID2TXTproc")
     Set loRxTable = ThisWorkbook.Sheets("Exp Config & Data Proc Params").ListObjects("PDU2RXTprocVendorID")
     
-    vendorKeys = uniqueVendors.Keys
+    vendorKeys = uniqueVendors.keys
     SortVariantLongArray pduKeys
     SortVariantStringArray vendorKeys
     
@@ -541,9 +652,9 @@ runTX_SFN_CR = (crChoice <> vbNo)
         Next oldCht
         
         If anyParameterChanged Then
-            wsLogSheet.Range("A1").Value = "PRE-WLS REPLOTTED LATENCY DISTRIBUTIONS (Updated Parameter Profiles)"
+            wsLogSheet.Range("A1").Value = "PRE-CR REPLOTTED LATENCY DISTRIBUTIONS (Updated Parameter Profiles)"
         Else
-            wsLogSheet.Range("A1").Value = "PRE-WLS PRELIMINARY LATENCY DISTRIBUTIONS (Offset Verification Pass)"
+            wsLogSheet.Range("A1").Value = "PRE-CR PRELIMINARY LATENCY DISTRIBUTIONS (Offset Verification Pass)"
         End If
         wsLogSheet.Range("A1").Font.Bold = True
         wsLogSheet.Range("A1").Font.Size = 14
@@ -583,7 +694,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
         
         parameterChanged = False
         
-        For Each vKey In uniqueVendors.Keys
+        For Each vKey In uniqueVendors.keys
             If Trim$(CStr(vKey)) <> "" Then
                 If dictVC.Exists(CStr(vKey)) Then
                     Dim currentTxVals As Variant
@@ -630,7 +741,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
         
         For pduIdx = 0 To UBound(pduKeys)
             currentFilterPdu = CLng(pduKeys(pduIdx))
-            For Each vKey In uniqueVendors.Keys
+            For Each vKey In uniqueVendors.keys
                 If Trim$(CStr(vKey)) <> "" Then
                     Dim rKey As String
                     rKey = currentFilterPdu & "|" & vKey
@@ -691,12 +802,11 @@ runTX_SFN_CR = (crChoice <> vbNo)
             Application.ScreenUpdating = False
             Set sfnMap = CreateObject("Scripting.Dictionary")
             For targetR = 1 To filteredCount
-                GetSingleRowWLSCost targetR, 0
-                ProcessInitialEstimation targetR
+                If DoWLS Then GetSingleRowWLSCost targetR, 0
+                Estimate_TX_SFN targetR
                 AddToMap targetR, CLng(data(targetR, idxSFNCol))
             Next targetR
         End If
-        
     Loop While parameterChanged
     
     totalProcTime = MicroTimer() - startTime
@@ -755,13 +865,29 @@ runTX_SFN_CR = (crChoice <> vbNo)
     filteredCount = UBound(data, 1)
     
     Dim cwlsSeconds As Double
+    Dim preCRGroups As Long
+    Dim preCRCsets As Long
+    Dim ranTXSFNCR As Boolean
     cwlsSeconds = 0
-    
+
+    FCV_title = "Group Analysis BEFORE Conflict Resolution"
+    out_col = "A"
+    Call FindConstraintViolations(0)
+    preCRGroups = FCV_GetGroupCount()
+    preCRCsets = FCV_GetCsetCount()
+
+    crChoice = MsgBox("Num SFs with multiple TXs (Groups) = " & preCRGroups & vbCrLf & _
+                      "Num Groups with Constraint Violations = " & preCRCsets & vbCrLf & _
+                      "Do you want to run Conflict Resolution?", vbYesNo + vbQuestion, "TX_SFN Conflict Resolution")
+    runTX_SFN_CR = (crChoice = vbYes)
+    ranTXSFNCR = False
+
     If runTX_SFN_CR Then
         TX_SFNConflictResolution data, filteredCount, idxSFNCol, idxTXID, idxTXQ, idxLEN, idxTXperSFN, _
                                idxRxCnt, idxAvg, idxTotLat, idxGen, rxDataColIdx, rxStationIDs, _
                                activeRxCount, dictS2V, dictVC, dictA2P, dictP2R, dictP2Sigma, _
                                txBitmap, bitmapLen, cwlsSeconds
+        ranTXSFNCR = True
     End If
 
    ' 7. FINAL CALCULATIONS & WRITEBACK
@@ -807,6 +933,12 @@ runTX_SFN_CR = (crChoice <> vbNo)
         filteredCount = targetTable.DataBodyRange.rows.count
         targetTable.Resize targetTable.HeaderRowRange.Resize(filteredCount + 1)
     End If
+
+    If ranTXSFNCR Then
+        FCV_title = "Group Analysis AFTER Conflict Resolution"
+        out_col = "J"
+        Call FindConstraintViolations(0)
+    End If
     
     Application.Calculation = prevCalc
     Application.ScreenUpdating = True
@@ -829,7 +961,7 @@ runTX_SFN_CR = (crChoice <> vbNo)
                  "--- SUB-ROUTINE EXECUTION METRICS ---" & vbCrLf
                  
     If perfLog.count > 0 Then
-        For Each k In perfLog.Keys
+        For Each k In perfLog.keys
             summaryMsg = summaryMsg & k & ": " & Format(perfLog(k), "0.000") & " s" & vbCrLf
         Next k
     Else
@@ -840,372 +972,6 @@ runTX_SFN_CR = (crChoice <> vbNo)
                  "Total Analytics Pipeline Time: " & Format(pipelineTime, "0.000") & " seconds"
                  
     MsgBox summaryMsg, vbInformation, "Pipeline Performance Monitor"
+Loop
 End Sub
 
-Private Function RenderVendorPreWlsSection(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, pduKeys As Variant, startRowPos As Long) As Long
-    vendorID = Trim$(CStr(vendorID))
-    If vendorID = "" Then
-        RenderVendorPreWlsSection = startRowPos
-        Exit Function
-    End If
-
-    ws.Cells(startRowPos, 1).Value = "Vendor " & vendorID
-    ws.Cells(startRowPos, 1).Font.Bold = True
-    ws.Cells(startRowPos, 1).Font.Size = 14
-
-    Dim rxMin As Double, rxMax As Double, rxStep As Double
-    Dim txMin As Double, txMax As Double, txStep As Double
-    On Error Resume Next
-    rxMin = ThisWorkbook.Sheets("Exp Config & Data Proc Params").Range("MIN_RX_MAC_latency").Value
-    rxMax = ThisWorkbook.Sheets("Exp Config & Data Proc Params").Range("MAX_RX_MAC_latency").Value
-    rxStep = ThisWorkbook.Sheets("Exp Config & Data Proc Params").Range("BIN_WIDTH_RX_MAC_latency").Value
-    txMin = ThisWorkbook.Sheets("Exp Config & Data Proc Params").Range("MIN_TX_MAC_latency").Value
-    txMax = ThisWorkbook.Sheets("Exp Config & Data Proc Params").Range("MAX_TX_MAC_latency").Value
-    txStep = ThisWorkbook.Sheets("Exp Config & Data Proc Params").Range("BIN_WIDTH_TX_MAC_latency").Value
-    On Error GoTo 0
-
-    If rxStep <= 0 Then rxStep = 1
-    If txStep <= 0 Then txStep = 1
-    If rxMax <= rxMin Then rxMax = rxMin + 100
-    If txMax <= txMin Then txMax = txMin + 100
-
-    Dim chartTopRow As Long: chartTopRow = startRowPos + 2
-    Dim chartTopPos As Double: chartTopPos = ws.Cells(chartTopRow, 1).Top
-
-    Dim chartWidth As Double: chartWidth = 360
-    Dim chartHeight As Double: chartHeight = 260
-
-    Dim rxChartLeft As Double: rxChartLeft = ws.Cells(chartTopRow, 1).Left
-    Dim rxTableCol As Long: rxTableCol = 4
-    Dim txChartLeft As Double: txChartLeft = ws.Cells(chartTopRow, 7).Left
-    Dim txTableCol As Long: txTableCol = 10
-
-    Dim rxTableLeft As Double: rxTableLeft = ws.Cells(chartTopRow, rxTableCol).Left
-    Dim txTableLeft As Double: txTableLeft = ws.Cells(chartTopRow, txTableCol).Left
-
-    Dim pduFilter As Long
-    If IsArray(pduKeys) Then
-        If UBound(pduKeys) >= LBound(pduKeys) Then
-            pduFilter = CLng(pduKeys(LBound(pduKeys)))
-        End If
-    End If
-
-    RenderSingleLatencyChart ws, dataBlock, rxCols, sfnIdx, txqIdx, txidIdx, lenColIdx, stToVenMap, vendorID, _
-                             pduFilter, False, rxChartLeft, chartTopPos, chartWidth, chartHeight, _
-                             rxMin, rxMax, rxStep
-
-    RenderSingleLatencyChart ws, dataBlock, rxCols, sfnIdx, txqIdx, txidIdx, lenColIdx, stToVenMap, vendorID, _
-                             0, True, txChartLeft, chartTopPos, chartWidth, chartHeight, _
-                             txMin, txMax, txStep
-
-    ws.Cells(chartTopRow, rxTableCol).Value = "RX MAC LATENCY SUMMARY - Vendor " & vendorID
-    ws.Cells(chartTopRow, rxTableCol).Font.Bold = True
-    ws.Cells(chartTopRow + 1, rxTableCol).Value = "Parameter"
-    ws.Cells(chartTopRow + 1, rxTableCol + 1).Value = "Value"
-    ws.Cells(chartTopRow + 1, rxTableCol).Font.Bold = True
-    ws.Cells(chartTopRow + 1, rxTableCol + 1).Font.Bold = True
-    WriteSingleLatencySummary ws, dataBlock, rxCols, sfnIdx, txqIdx, txidIdx, lenColIdx, stToVenMap, vendorID, _
-                              pduFilter, False, chartTopRow + 2, rxTableCol
-
-    ws.Cells(chartTopRow, txTableCol).Value = "TX MAC LATENCY SUMMARY - Vendor " & vendorID
-    ws.Cells(chartTopRow, txTableCol).Font.Bold = True
-    ws.Cells(chartTopRow + 1, txTableCol).Value = "Parameter"
-    ws.Cells(chartTopRow + 1, txTableCol + 1).Value = "Value"
-    ws.Cells(chartTopRow + 1, txTableCol).Font.Bold = True
-    ws.Cells(chartTopRow + 1, txTableCol + 1).Font.Bold = True
-    WriteSingleLatencySummary ws, dataBlock, rxCols, sfnIdx, txqIdx, txidIdx, lenColIdx, stToVenMap, vendorID, _
-                              0, True, chartTopRow + 2, txTableCol
-
-    RenderVendorPreWlsSection = chartTopRow + 14
-End Function
-
-Private Sub RenderSingleLatencyChart(ws As Worksheet, dataBlock As Variant, rxCols() As Long, sfnIdx As Long, txqIdx As Long, txidIdx As Long, lenColIdx As Long, stToVenMap As Object, vendorID As String, targetPduFilter As Long, isTXBlock As Boolean, chartLeft As Double, chartTop As Double, chartWidth As Double, chartHeight As Double, bMin As Double, bMax As Double, bStep As Double)
-    Dim lats() As Double
-    Dim countVal As Long
-    Dim n As Long, r As Long, i As Long
-    Dim val As Double
-    Dim mapValChart As Variant
-    Dim rawLenVal As String
-    Dim mappedPduStr As String
-    
-    ReDim lats(1 To UBound(dataBlock, 1) * (UBound(rxCols) + 1))
-    countVal = 0
-    
-    For n = 1 To UBound(rxCols)
-        If stToVenMap.Exists(CStr(n)) Then
-            If stToVenMap(CStr(n)) = vendorID Then
-                For r = 1 To UBound(dataBlock, 1)
-                    Dim includeRow As Boolean
-                    includeRow = False
-                    
-                    If isTXBlock Then
-                        If CStr(dataBlock(r, txidIdx)) = CStr(n) Then
-                            includeRow = True
-                        End If
-                    Else
-                        rawLenVal = Trim$(CStr(dataBlock(r, lenColIdx)))
-                        
-                        If dictA2P.Exists(rawLenVal) Then
-                            mapValChart = dictA2P(rawLenVal)
-                            If IsArray(mapValChart) Then
-                                mappedPduStr = Trim$(CStr(mapValChart(1)))
-                            Else
-                                mappedPduStr = Trim$(CStr(mapValChart))
-                            End If
-                        Else
-                            mappedPduStr = rawLenVal
-                        End If
-                        
-                        If IsNumeric(mappedPduStr) Then
-                            If CLng(mappedPduStr) = targetPduFilter Then
-                                includeRow = True
-                            End If
-                        End If
-                    End If
-                    
-                    If includeRow Then
-                        If isTXBlock Then
-                            val = dataBlock(r, sfnIdx) - dataBlock(r, txqIdx)
-                        Else
-                            val = dataBlock(r, rxCols(n)) - dataBlock(r, sfnIdx)
-                        End If
-                        If val >= 0 Then
-                            countVal = countVal + 1
-                            lats(countVal) = val
-                        End If
-                    End If
-                Next r
-            End If
-        End If
-    Next n
-    
-    If countVal = 0 Then Exit Sub
-    ReDim Preserve lats(1 To countVal)
-    
-    Dim xLabels() As Double, yFreq() As Double, yCDF() As Double, bCounts() As Long
-    Dim nBins As Long
-    nBins = CLng((bMax - bMin) / bStep) + 1
-    If nBins > 2000 Then nBins = 2000
-    ReDim xLabels(1 To nBins)
-    ReDim yFreq(1 To nBins)
-    ReDim yCDF(1 To nBins)
-    ReDim bCounts(1 To nBins)
-    
-    For i = 1 To countVal
-        Dim bIdx As Long
-        bIdx = Int((lats(i) - bMin) / bStep) + 1
-        If bIdx >= 1 And bIdx <= nBins Then bCounts(bIdx) = bCounts(bIdx) + 1
-    Next i
-    
-    Dim curCum As Long
-    curCum = 0
-    For i = 1 To nBins
-        xLabels(i) = bMin + (i - 1) * bStep
-        yFreq(i) = bCounts(i)
-        curCum = curCum + bCounts(i)
-        yCDF(i) = curCum / countVal
-    Next i
-    
-    Dim targetMu As Double: targetMu = 0
-    Dim targetSigma As Double: targetSigma = 0
-    
-    If isTXBlock Then
-        If dictVC.Exists(vendorID) Then
-            Dim txParams As Variant
-            txParams = dictVC(vendorID)
-            targetMu = Abs(CDbl(txParams(0)))
-            targetSigma = CDbl(txParams(1))
-        End If
-    Else
-        Dim matrixKey As String
-        matrixKey = targetPduFilter & "|" & vendorID
-        If dictP2R.Exists(matrixKey) Then targetMu = dictP2R(matrixKey)
-        If dictP2Sigma.Exists(matrixKey) Then targetSigma = dictP2Sigma(matrixKey)
-    End If
-    
-    Dim cht As ChartObject
-    Set cht = ws.ChartObjects.Add(chartLeft, chartTop, chartWidth, chartHeight)
-    
-    With cht.Chart
-        .HasTitle = True
-        If isTXBlock Then
-            .ChartTitle.Text = "Vendor " & vendorID & " PRELIMINARY TX MAC LATENCY"
-        Else
-            .ChartTitle.Text = "Vendor " & vendorID & " PRELIMINARY RX MAC LATENCY (PDU: " & targetPduFilter & "B)"
-        End If
-        
-        With .SeriesCollection.NewSeries
-            .Name = "Frequency"
-            .Values = yFreq
-            .XValues = xLabels
-            .ChartType = xlColumnClustered
-        End With
-        .ChartGroups(1).GapWidth = 50
-        
-        With .SeriesCollection.NewSeries
-            .Name = "CDF"
-            .Values = yCDF
-            .XValues = xLabels
-            .ChartType = xlXYScatterLinesNoMarkers
-            .AxisGroup = xlSecondary
-            .Format.Line.ForeColor.RGB = RGB(0, 128, 0)
-        End With
-        
-        Dim baseTprocSeriesIndex As Long
-        Dim baseSigmaMinusSeriesIndex As Long
-        Dim baseSigmaPlusSeriesIndex As Long
-        baseTprocSeriesIndex = 0
-        baseSigmaMinusSeriesIndex = 0
-        baseSigmaPlusSeriesIndex = 0
-        
-        If targetMu > 0 Then
-            With .SeriesCollection.NewSeries
-                .Name = "Tproc"
-                .Values = Array(0, 1)
-                .XValues = Array(targetMu, targetMu)
-                .ChartType = xlXYScatterLinesNoMarkers
-                .AxisGroup = xlSecondary
-                .Format.Line.ForeColor.RGB = RGB(255, 0, 0)
-                .Format.Line.Weight = 1.5
-            End With
-            baseTprocSeriesIndex = .SeriesCollection.count
-        End If
-        
-        If targetMu > 0 And targetSigma > 0 And (targetMu - targetSigma) >= bMin Then
-            With .SeriesCollection.NewSeries
-                .Name = "Tproc - Sigma"
-                .Values = Array(0, 1)
-                .XValues = Array(targetMu - targetSigma, targetMu - targetSigma)
-                .ChartType = xlXYScatterLinesNoMarkers
-                .AxisGroup = xlSecondary
-                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
-                .Format.Line.DashStyle = msoLineDash
-            End With
-            baseSigmaMinusSeriesIndex = .SeriesCollection.count
-        End If
-        
-        If targetMu > 0 And targetSigma > 0 And (targetMu + targetSigma) <= bMax Then
-            With .SeriesCollection.NewSeries
-                .Name = "Tproc + Sigma"
-                .Values = Array(0, 1)
-                .XValues = Array(targetMu + targetSigma, targetMu + targetSigma)
-                .ChartType = xlXYScatterLinesNoMarkers
-                .AxisGroup = xlSecondary
-                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
-                .Format.Line.DashStyle = msoLineDash
-            End With
-            baseSigmaPlusSeriesIndex = .SeriesCollection.count
-        End If
-        
-        If Not isTXBlock Then
-            Dim chartHarqEnabled As Boolean
-            Dim chartHarqValue As Variant
-            chartHarqEnabled = False
-            
-            On Error Resume Next
-            chartHarqValue = ThisWorkbook.Names("HARQ").RefersToRange.Value
-            If Err.Number = 0 Then
-                If IsNumeric(chartHarqValue) Then
-                    chartHarqEnabled = (CLng(chartHarqValue) = 1)
-                End If
-            End If
-            Err.Clear
-            On Error GoTo 0
-            
-            If chartHarqEnabled And targetMu > 0 Then
-                Dim harqOffset As Long
-                Dim shiftedMu As Double
-                Dim shiftedSigmaLow As Double
-                Dim shiftedSigmaHigh As Double
-                
-                harqOffset = 1
-                Do While (targetMu + harqOffset) <= bMax
-                    shiftedMu = targetMu + harqOffset
-                    
-                    With .SeriesCollection.NewSeries
-                        .Name = "Tproc"
-                        .Values = Array(0, 1)
-                        .XValues = Array(shiftedMu, shiftedMu)
-                        .ChartType = xlXYScatterLinesNoMarkers
-                        .AxisGroup = xlSecondary
-                        .Format.Line.ForeColor.RGB = RGB(255, 0, 0)
-                        .Format.Line.Weight = 1.5
-                    End With
-                    
-                    If targetSigma > 0 Then
-                        shiftedSigmaLow = shiftedMu - targetSigma
-                        shiftedSigmaHigh = shiftedMu + targetSigma
-                        
-                        If shiftedSigmaLow >= bMin Then
-                            With .SeriesCollection.NewSeries
-                                .Name = "Tproc - Sigma"
-                                .Values = Array(0, 1)
-                                .XValues = Array(shiftedSigmaLow, shiftedSigmaLow)
-                                .ChartType = xlXYScatterLinesNoMarkers
-                                .AxisGroup = xlSecondary
-                                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
-                                .Format.Line.DashStyle = msoLineDash
-                            End With
-                        End If
-                        
-                        If shiftedSigmaHigh <= bMax Then
-                            With .SeriesCollection.NewSeries
-                                .Name = "Tproc + Sigma"
-                                .Values = Array(0, 1)
-                                .XValues = Array(shiftedSigmaHigh, shiftedSigmaHigh)
-                                .ChartType = xlXYScatterLinesNoMarkers
-                                .AxisGroup = xlSecondary
-                                .Format.Line.ForeColor.RGB = RGB(0, 0, 255)
-                                .Format.Line.DashStyle = msoLineDash
-                            End With
-                        End If
-                    End If
-                    
-                    harqOffset = harqOffset + 1
-                Loop
-            End If
-        End If
-        
-        With .Axes(xlCategory)
-            .HasTitle = True
-            .AxisTitle.Text = "Time (ms)"
-            .TickLabels.Orientation = 90
-        End With
-        
-        With .Axes(xlCategory, xlSecondary)
-            .MinimumScale = bMin - (bStep / 2)
-            .MaximumScale = (bMin + (nBins - 1) * bStep) + (bStep / 2)
-            .TickLabelPosition = xlNone
-            .Format.Line.Visible = msoFalse
-        End With
-        
-        With .Axes(xlValue)
-            .HasTitle = True
-            .AxisTitle.Text = "Frequency"
-        End With
-        
-        With .Axes(xlValue, xlSecondary)
-            .HasTitle = True
-            .AxisTitle.Text = "CDF Probability"
-            .MinimumScale = 0
-            .MaximumScale = 1
-        End With
-        
-        .HasLegend = True
-        .Legend.Position = xlLegendPositionBottom
-        
-        On Error Resume Next
-        If .HasLegend Then
-            Dim legendEntryCount As Long
-            legendEntryCount = .Legend.LegendEntries.count
-            For i = legendEntryCount To 1 Step -1
-                If i <> 1 And i <> 2 Then
-                    If i <> baseTprocSeriesIndex And i <> baseSigmaMinusSeriesIndex And i <> baseSigmaPlusSeriesIndex Then
-                        .Legend.LegendEntries(i).Delete
-                    End If
-                End If
-            Next i
-        End If
-        On Error GoTo 0
-    End With
-End Sub
