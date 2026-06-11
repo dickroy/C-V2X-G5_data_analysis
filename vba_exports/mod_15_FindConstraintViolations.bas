@@ -1,7 +1,8 @@
 Attribute VB_Name = "mod_15_FindConstraintViolations"
 Option Explicit
 
-' Bookmark: FindConstraintViolations_v21
+' Bookmark: FindConstraintViolations_v2.0.1
+' Version: V2.0.1
 ' Status: in-memory validation:
 '   1) TX_ID uniqueness within TX_SFN_est group
 '   2) TX/RX overlap within TX_SFN_est group
@@ -11,8 +12,61 @@ Option Explicit
 '
 ' Target: Excel 2024 LTSC
 
+Public FCV_title As String
+Public out_col As String
+
+Private mFCV_CsetStartRows() As Long
+Private mFCV_CsetEndRows() As Long
+Private mFCV_CsetSFN() As Long
+Private mFCV_GroupCount As Long
+Private mFCV_CsetCount As Long
+Private mFCV_WarningGroupCount As Long
+Private mFCV_CacheValid As Boolean
+
 Public Sub Run_FindConstraintViolations()
     Call FindConstraintViolations(0)
+End Sub
+
+Public Function FCV_HasCache() As Boolean
+    FCV_HasCache = mFCV_CacheValid
+End Function
+
+Public Function FCV_GetGroupCount() As Long
+    FCV_GetGroupCount = mFCV_GroupCount
+End Function
+
+Public Function FCV_GetCsetCount() As Long
+    FCV_GetCsetCount = mFCV_CsetCount
+End Function
+
+Public Function FCV_GetWarningGroupCount() As Long
+    FCV_GetWarningGroupCount = mFCV_WarningGroupCount
+End Function
+
+Public Function FCV_GetCsetStartRow(ByVal idx As Long) As Long
+    If idx >= 1 And idx <= mFCV_CsetCount Then
+        FCV_GetCsetStartRow = mFCV_CsetStartRows(idx)
+    End If
+End Function
+
+Private Sub FCV_ResetCache()
+    mFCV_GroupCount = 0
+    mFCV_CsetCount = 0
+    mFCV_WarningGroupCount = 0
+    mFCV_CacheValid = False
+    Erase mFCV_CsetStartRows
+    Erase mFCV_CsetEndRows
+    Erase mFCV_CsetSFN
+End Sub
+
+Private Sub FCV_AddCset(ByVal startRow As Long, ByVal endRow As Long, ByVal sfnVal As Long)
+    mFCV_CsetCount = mFCV_CsetCount + 1
+    ReDim Preserve mFCV_CsetStartRows(1 To mFCV_CsetCount)
+    ReDim Preserve mFCV_CsetEndRows(1 To mFCV_CsetCount)
+    ReDim Preserve mFCV_CsetSFN(1 To mFCV_CsetCount)
+    mFCV_CsetStartRows(mFCV_CsetCount) = startRow
+    mFCV_CsetEndRows(mFCV_CsetCount) = endRow
+    mFCV_CsetSFN(mFCV_CsetCount) = sfnVal
 End Sub
 
 Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Long
@@ -37,7 +91,10 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim dictRXProc As Object
     Dim dictRXSigma As Object
 
-    Dim numViolations As Long, writeRow As Long
+    Dim numIssues As Long, numWarnings As Long, numViolations As Long, writeRow As Long
+    Dim NumConstraintCatalogs As Long, NumWarningCatalogs As Long
+    Dim groupHasViolation As Boolean, groupHasWarning As Boolean
+    Dim baseOutCol As Long, rxTableColStart As Long
     Dim txIDs() As Long, rxStationIDs() As Long
     Dim txCount As Long, rxCount As Long
     Dim rxHasAny() As Boolean, capacitySum() As Long
@@ -52,6 +109,8 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim rxThreshold As Double
 
     On Error GoTo CleanFail
+    NumConstraintCatalogs = 3
+    NumWarningCatalogs = 1
 
     Set wsExp = ThisWorkbook.Worksheets("ExpResults")
     Set tbl = wsExp.ListObjects("ExpResultsTable")
@@ -63,13 +122,21 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Set vendorTxtTbl = wsCfg.ListObjects("VendorID2TXTproc")
     Set pduRxtTbl = wsCfg.ListObjects("PDU2RXTprocVendorID")
 
+    FCV_ResetCache
+
     On Error Resume Next
-    Set wsLog = ThisWorkbook.Worksheets("TX_SFN est Log")
+    Set wsLog = ThisWorkbook.Worksheets("Conflict Resolution Log")
     On Error GoTo CleanFail
     If wsLog Is Nothing Then
         Set wsLog = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.count))
-        wsLog.Name = "TX_SFN est Log"
+        wsLog.Name = "Conflict Resolution Log"
     End If
+
+    If LenB(Trim$(out_col)) = 0 Then out_col = "A"
+    If LenB(Trim$(FCV_title)) = 0 Then FCV_title = "Group Analysis BEFORE Conflict Resolution"
+
+    baseOutCol = wsLog.Range(UCase$(Trim$(out_col)) & "1").Column
+    rxTableColStart = baseOutCol + 4
 
     maxSch = GetWorkbookNameLong("Nsch_per_subfr")
     nRx = GetWorkbookNameLong("Num_Rx_Stations")
@@ -190,40 +257,31 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Next i
 
     If numViolations2Find = 0 Then
-        wsLog.Range("I2:L100000").ClearContents
-        With wsLog.Range("I2")
-            .Value = "CONSTRAINT VALIDATION"
-            .Font.Bold = True
-            .Offset(1, 0).Value = "Timestamp:"
-            .Offset(1, 1).Value = Now
-            .Offset(2, 0).Value = "Issues Found:"
-            .Offset(2, 1).Value = 0
-            .Offset(3, 0).Value = "Processing (s):"
-            .Offset(3, 1).Value = ""
-            .Offset(5, 0).Value = "Row"
-            .Offset(5, 1).Value = "SFN"
-            .Offset(5, 2).Value = "Type"
-            .Offset(5, 3).Value = "Description"
-            .Offset(5, 0).Resize(1, 4).Font.Bold = True
-        End With
+        wsLog.Range(wsLog.Cells(1, baseOutCol), wsLog.Cells(100000, baseOutCol + 25)).ClearContents
+        wsLog.Cells(1, baseOutCol).Value = FCV_title
+        wsLog.Cells(1, baseOutCol).Font.Bold = True
+        wsLog.Cells(3, baseOutCol).Value = "Timestamp:"
+        wsLog.Cells(3, baseOutCol + 1).Value = Now
+        wsLog.Cells(4, baseOutCol).Value = "Issues Found:"
+        wsLog.Cells(4, baseOutCol + 1).Value = 0
+        wsLog.Cells(5, baseOutCol).Value = "Processing (s):"
+        wsLog.Cells(5, baseOutCol + 1).Value = ""
+        wsLog.Cells(6, baseOutCol).Value = "Num SFs with multiple TXs (Groups):"
+        wsLog.Cells(6, baseOutCol + 1).Value = 0
+        wsLog.Cells(7, baseOutCol).Value = "Num Groups with Constraint Violations (Catalog IDs 1-" & NumConstraintCatalogs & "):"
+        wsLog.Cells(7, baseOutCol + 1).Value = 0
+        wsLog.Cells(8, baseOutCol).Value = "Warning Groups (Catalog IDs 1-" & NumWarningCatalogs & "):"
+        wsLog.Cells(8, baseOutCol + 1).Value = 0
+        wsLog.Cells(9, baseOutCol).Value = "Row"
+        wsLog.Cells(9, baseOutCol + 1).Value = "SFN"
+        wsLog.Cells(9, baseOutCol + 2).Value = "Type"
+        wsLog.Range(wsLog.Cells(9, baseOutCol), wsLog.Cells(9, baseOutCol + 2)).Font.Bold = True
     End If
 
-    ' TXTproc table 5 cols left from prior placement
-    wsLog.Range("M2:N100000").ClearContents
-    wsLog.Range("Q2:R100000").ClearContents
+    wsLog.Range(wsLog.Cells(3, rxTableColStart), wsLog.Cells(100000, rxTableColStart + 30)).ClearContents
 
-    wsLog.Range("M2").Value = "TX_ID"
-    wsLog.Range("N2").Value = "TXTproc"
-
-    wsLog.Range("Q2").Value = "Station_ID"
-    wsLog.Range("R2").Value = "PDU Length / RX Timing"
-
-    writeRow = 3
-    For Each stationKey In dictTXProc.Keys
-        wsLog.Cells(writeRow, "M").Value = stationKey
-        wsLog.Cells(writeRow, "N").Value = dictTXProc(stationKey)
-        writeRow = writeRow + 1
-    Next stationKey
+    wsLog.Cells(3, rxTableColStart).Value = "Station_ID"
+    wsLog.Cells(3, rxTableColStart + 1).Value = "PDU Length / RX Timing"
 
     ' RX table: Station_ID + one column per unique resolved PDU value
     Dim dictPDUUsed As Object, pduUsedKey As Variant
@@ -240,22 +298,22 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         End If
     Next i
 
-    wsLog.Cells(2, "Q").Value = "Station_ID"
+    wsLog.Cells(3, rxTableColStart).Value = "Station_ID"
     Dim pduHeaderCol As Long
-    pduHeaderCol = 18 ' R
+    pduHeaderCol = rxTableColStart + 1
     For Each pduUsedKey In dictPDUUsed.Keys
-        wsLog.Cells(2, pduHeaderCol).Value = "PDU=" & CStr(pduUsedKey)
+        wsLog.Cells(3, pduHeaderCol).Value = "PDU=" & CStr(pduUsedKey)
         pduHeaderCol = pduHeaderCol + 1
     Next pduUsedKey
 
     Dim rxTableRow As Long, rxTableCol As Long, pduVal As String
-    rxTableRow = 3
+    rxTableRow = 4
     For i = 1 To UBound(stationVendorData, 1)
         If Not IsEmpty(stationVendorData(i, 1)) Then
             stationIdNum = CLng(stationVendorData(i, 1))
-            wsLog.Cells(rxTableRow, "Q").Value = stationIdNum
+            wsLog.Cells(rxTableRow, rxTableColStart).Value = stationIdNum
 
-            rxTableCol = 18 ' R
+            rxTableCol = rxTableColStart + 1
             For Each pduUsedKey In dictPDUUsed.Keys
                 pduVal = CStr(pduUsedKey)
                 If dictRXProc.Exists(CStr(stationIdNum) & "|" & pduVal) Then
@@ -276,9 +334,11 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         End If
     Next i
 
-    writeRow = 8
+    writeRow = 10
+    numIssues = 0
+    numWarnings = 0
     numViolations = 0
-    Application.StatusBar = "FindConstraintViolations v21: scanning ExpResultsTable..."
+    Application.StatusBar = "FindConstraintViolations V2.0.1: scanning ExpResultsTable..."
 
     i = 1
     Do While i <= UBound(data, 1)
@@ -295,6 +355,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
             i = i + 1
         Loop
         endRow = i
+        mFCV_GroupCount = mFCV_GroupCount + 1
+        groupHasViolation = False
+        groupHasWarning = False
 
         txCount = 0
         rxCount = 0
@@ -321,15 +384,11 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
                     If dictTXProc.Exists(CStr(txStationId)) Then
                         txtProc = CDbl(dictTXProc(CStr(txStationId)))
                         If txSfnVal < (Round(txQTime + txtProc) - maxTXDecrement) Then
-                            numViolations = numViolations + 1
-                            If numViolations2Find = 0 Then
-                                wsLog.Cells(writeRow, "I").Value = startRow
-                                wsLog.Cells(writeRow, "J").Value = currentSFN
-                                wsLog.Cells(writeRow, "K").Value = "TXTIME"
-                                wsLog.Cells(writeRow, "L").Value = "TX_SFN_est < ROUND(TXQTIME + TXTproc) - maxTX_SFN_est_decrement."
-                                writeRow = writeRow + 1
-                            Else
-                                FindConstraintViolations = numViolations
+                            AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
+                                           startRow, currentSFN, "TXTIME", _
+                                           numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+                            If numViolations2Find <> 0 Then
+                                FindConstraintViolations = numIssues
                                 Exit Function
                             End If
                         End If
@@ -393,15 +452,11 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
                 rxThreshold = rxMinTime - rxProc + 3# * rxSigma
 
                 If txSfnVal > rxThreshold Then
-                    numViolations = numViolations + 1
-                    If numViolations2Find = 0 Then
-                        wsLog.Cells(writeRow, "I").Value = j
-                        wsLog.Cells(writeRow, "J").Value = currentSFN
-                        wsLog.Cells(writeRow, "K").Value = "RXTIME"
-                        wsLog.Cells(writeRow, "L").Value = "TX_SFN_est > min(RXTIME) - RXTproc + 3*sigma."
-                        writeRow = writeRow + 1
-                    Else
-                        FindConstraintViolations = numViolations
+                    AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
+                                   j, currentSFN, "RXTIME", _
+                                   numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+                    If numViolations2Find <> 0 Then
+                        FindConstraintViolations = numIssues
                         Exit Function
                     End If
                 End If
@@ -409,15 +464,11 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         Next j
 
         If Not IsUniqueLongList(txIDs, txCount) Then
-            numViolations = numViolations + 1
-            If numViolations2Find = 0 Then
-                wsLog.Cells(writeRow, "I").Value = startRow
-                wsLog.Cells(writeRow, "J").Value = currentSFN
-                wsLog.Cells(writeRow, "K").Value = "TX-TX"
-                wsLog.Cells(writeRow, "L").Value = "TX_ID values are not unique within this TX_SFN_est group."
-                writeRow = writeRow + 1
-            Else
-                FindConstraintViolations = numViolations
+            AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
+                           startRow, currentSFN, "1", _
+                           numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+            If numViolations2Find <> 0 Then
+                FindConstraintViolations = numIssues
                 Exit Function
             End If
         End If
@@ -430,46 +481,46 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         Next st
 
         If HasOverlap(txIDs, txCount, rxStationIDs, rxCount) Then
-            numViolations = numViolations + 1
-            If numViolations2Find = 0 Then
-                wsLog.Cells(writeRow, "I").Value = startRow
-                wsLog.Cells(writeRow, "J").Value = currentSFN
-                wsLog.Cells(writeRow, "K").Value = "TX/RX"
-                wsLog.Cells(writeRow, "L").Value = "Merged TX + RX station list is not unique within this TX_SFN_est group."
-                writeRow = writeRow + 1
-            Else
-                FindConstraintViolations = numViolations
+            AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
+                           startRow, currentSFN, "2", _
+                           numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+            If numViolations2Find <> 0 Then
+                FindConstraintViolations = numIssues
                 Exit Function
             End If
         End If
 
         For st = 1 To nRx
             If capacitySum(st) > maxSch Then
-                numViolations = numViolations + 1
-                If numViolations2Find = 0 Then
-                    wsLog.Cells(writeRow, "I").Value = startRow
-                    wsLog.Cells(writeRow, "J").Value = currentSFN
-                    wsLog.Cells(writeRow, "K").Value = "CAPACITY"
-                    wsLog.Cells(writeRow, "L").Value = "St " & st & " sum " & capacitySum(st) & " > " & maxSch
-                    writeRow = writeRow + 1
-                Else
-                    FindConstraintViolations = numViolations
+                AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
+                               startRow, currentSFN, "3", _
+                               numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+                If numViolations2Find <> 0 Then
+                    FindConstraintViolations = numIssues
                     Exit Function
                 End If
             End If
         Next st
+
+        If groupHasViolation Then FCV_AddCset startRow, endRow, CLng(currentSFN)
+        If groupHasWarning Then mFCV_WarningGroupCount = mFCV_WarningGroupCount + 1
 
         i = i + 1
 NextGroup:
     Loop
 
     If numViolations2Find = 0 Then
-        wsLog.Range("J4").Value = numViolations
-        wsLog.Range("J5").Value = Round(Timer - startTime, 3)
-        wsLog.Columns("I:Z").AutoFit
+        wsLog.Cells(4, baseOutCol + 1).Value = numIssues
+        wsLog.Cells(5, baseOutCol + 1).Value = Round(Timer - startTime, 3)
+        wsLog.Cells(6, baseOutCol + 1).Value = mFCV_GroupCount
+        wsLog.Cells(7, baseOutCol + 1).Value = mFCV_CsetCount
+        wsLog.Cells(8, baseOutCol + 1).Value = mFCV_WarningGroupCount
+        wsLog.Cells(1, baseOutCol).Font.Bold = True
+        wsLog.Range(wsLog.Cells(1, baseOutCol), wsLog.Cells(100000, baseOutCol + 25)).Columns.AutoFit
+        mFCV_CacheValid = True
     End If
 
-    FindConstraintViolations = numViolations
+    FindConstraintViolations = numIssues
     Exit Function
 
 CleanFail:
@@ -477,6 +528,37 @@ CleanFail:
     MsgBox "FindConstraintViolations failed:" & vbCrLf & _
            "Err " & Err.Number & " - " & Err.Description, vbCritical, "Find Constraint Violations"
     FindConstraintViolations = -1
+End Function
+
+Private Sub AppendFCVIssue(ByVal wsLog As Worksheet, ByRef writeRow As Long, ByVal numViolations2Find As Long, _
+                           ByVal baseOutCol As Long, ByVal rowValue As Variant, ByVal sfnValue As Variant, _
+                           ByVal issueType As String, ByRef numIssues As Long, ByRef numWarnings As Long, _
+                           ByRef numViolations As Long, ByRef groupHasWarning As Boolean, _
+                           ByRef groupHasViolation As Boolean)
+    Dim isWarning As Boolean
+
+    isWarning = IsFCVWarning(issueType)
+    numIssues = numIssues + 1
+
+    If isWarning Then
+        numWarnings = numWarnings + 1
+        groupHasWarning = True
+    Else
+        numViolations = numViolations + 1
+        groupHasViolation = True
+    End If
+
+    If numViolations2Find = 0 Then
+        wsLog.Cells(writeRow, baseOutCol).Value = rowValue
+        wsLog.Cells(writeRow, baseOutCol + 1).Value = sfnValue
+        wsLog.Cells(writeRow, baseOutCol + 2).Value = issueType
+        writeRow = writeRow + 1
+    End If
+End Sub
+
+Private Function IsFCVWarning(ByVal issueType As String) As Boolean
+    IsFCVWarning = (StrComp(Trim$(issueType), "TXTIME", vbTextCompare) = 0 Or _
+                    StrComp(Trim$(issueType), "RXTIME", vbTextCompare) = 0)
 End Function
 
 Private Function GetWorkbookNameLong(ByVal nameText As String) As Long
@@ -527,4 +609,3 @@ Private Function HasOverlap(ByRef txArr() As Long, ByVal txN As Long, ByRef rxAr
         Next j
     Next i
 End Function
-
