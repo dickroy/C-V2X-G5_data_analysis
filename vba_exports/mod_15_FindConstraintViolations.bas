@@ -92,7 +92,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim dictRXSigma As Object
 
     Dim numIssues As Long, numWarnings As Long, numViolations As Long, writeRow As Long
-    Dim NumConstraintCatalogs As Long, NumWarningCatalogs As Long
+    Dim NumConstraintTypes As Long, NumWarningTypes As Long
     Dim groupHasViolation As Boolean, groupHasWarning As Boolean
     Dim baseOutCol As Long, rxTableColStart As Long
     Dim txIDs() As Long, rxStationIDs() As Long
@@ -109,8 +109,8 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim rxThreshold As Double
 
     On Error GoTo CleanFail
-    NumConstraintCatalogs = 3
-    NumWarningCatalogs = 1
+    NumConstraintTypes = 3
+    NumWarningTypes = 2
 
     Set wsExp = ThisWorkbook.Worksheets("ExpResults")
     Set tbl = wsExp.ListObjects("ExpResultsTable")
@@ -268,9 +268,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         wsLog.Cells(5, baseOutCol + 1).Value = ""
         wsLog.Cells(6, baseOutCol).Value = "Num SFs with multiple TXs (Groups):"
         wsLog.Cells(6, baseOutCol + 1).Value = 0
-        wsLog.Cells(7, baseOutCol).Value = "Num Groups with Constraint Violations (Catalog IDs 1-" & NumConstraintCatalogs & "):"
+        wsLog.Cells(7, baseOutCol).Value = "Num Groups with Constraint Violations (Types 1-" & NumConstraintTypes & "):"
         wsLog.Cells(7, baseOutCol + 1).Value = 0
-        wsLog.Cells(8, baseOutCol).Value = "Warning Groups (Catalog IDs 1-" & NumWarningCatalogs & "):"
+        wsLog.Cells(8, baseOutCol).Value = "Warning Groups (Types TXTIME/RXTIME; total types=" & NumWarningTypes & "):"
         wsLog.Cells(8, baseOutCol + 1).Value = 0
         wsLog.Cells(9, baseOutCol).Value = "Row"
         wsLog.Cells(9, baseOutCol + 1).Value = "SFN"
@@ -557,6 +557,7 @@ Private Sub AppendFCVIssue(ByVal wsLog As Worksheet, ByRef writeRow As Long, ByV
 End Sub
 
 Private Function IsFCVWarning(ByVal issueType As String) As Boolean
+    ' Type values TXTIME/RXTIME are treated as warnings; numeric types (1-3) are hard violations.
     IsFCVWarning = (StrComp(Trim$(issueType), "TXTIME", vbTextCompare) = 0 Or _
                     StrComp(Trim$(issueType), "RXTIME", vbTextCompare) = 0)
 End Function
