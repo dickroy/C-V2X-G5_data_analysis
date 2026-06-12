@@ -1,14 +1,14 @@
 Attribute VB_Name = "mod_15_FindConstraintViolations"
 Option Explicit
 
-' Bookmark: FindConstraintViolations_v2.0.1
+' Bookmark: FindConstraintViolations
 ' Version: V2.0.1
 ' Status: in-memory validation:
-'   1) TX_ID uniqueness within TX_SFN_est group
-'   2) TX/RX overlap within TX_SFN_est group
-'   3) Capacity per RX station
-'   4) TX timing: TX_SFN_est >= ROUND(TXQTIME + TXTproc) - maxTX_SFN_est_decrement
-'   5) RX timing: TX_SFN_est <= min(RXTIME) - RXTproc + 3*sigma
+'   1) TX_ID uniqueness within TX_SFN_est group         (type: TX-TX,      violation)
+'   2) TX/RX overlap within TX_SFN_est group            (type: TX-RX,      violation)
+'   3) Capacity per RX station                          (type: NSR-OL,     violation)
+'   4) TX timing: TX_SFN_est >= ROUND(TXQTIME+TXTproc) (type: TXSFN-MTF,  warning)
+'   5) RX timing: TX_SFN_est <= min(RXTIME)-RXTproc    (type: TXSFN>RXT,  warning)
 '
 ' Target: Excel 2024 LTSC
 
@@ -19,16 +19,48 @@ Private mFCV_CsetStartRows() As Long
 Private mFCV_CsetEndRows() As Long
 Private mFCV_CsetSFN() As Long
 Private mFCV_GroupCount As Long
+Private mFCV_SFNCount As Long
 Private mFCV_CsetCount As Long
 Private mFCV_WarningGroupCount As Long
 Private mFCV_CacheValid As Boolean
+
+' ---------------------------------------------------------------------------
+' Public entry points
+' ---------------------------------------------------------------------------
+
+Public Sub Run_FCV()
+    ' Prompt user for BEFORE/AFTER placement in Conflict Resolution Log.
+    ' AFTER is the default (second button / pressing Enter selects it).
+    ' The only effect of this choice is the FCV_title / output placement.
+    Dim answer As VbMsgBoxResult
+    answer = MsgBox("Is this FCV run BEFORE or AFTER Conflict Resolution is run on the raw data?" & vbCrLf & vbCrLf & _
+                    "  [Yes] = BEFORE" & vbCrLf & _
+                    "  [No]  = AFTER  (press Enter for default)", _
+                    vbYesNo + vbQuestion + vbDefaultButton2, "FCV Run Timing")
+    If answer = vbYes Then
+        FCV_title = "Group Analysis BEFORE Conflict Resolution"
+        out_col = "A"
+    Else
+        FCV_title = "Group Analysis AFTER Conflict Resolution"
+        out_col = "A"
+    End If
+    Call FindConstraintViolations(0)
+End Sub
 
 Public Sub Run_FindConstraintViolations()
     Call FindConstraintViolations(0)
 End Sub
 
+' ---------------------------------------------------------------------------
+' Cache accessors
+' ---------------------------------------------------------------------------
+
 Public Function FCV_HasCache() As Boolean
     FCV_HasCache = mFCV_CacheValid
+End Function
+
+Public Function FCV_GetSFNCount() As Long
+    FCV_GetSFNCount = mFCV_SFNCount
 End Function
 
 Public Function FCV_GetGroupCount() As Long
@@ -49,8 +81,13 @@ Public Function FCV_GetCsetStartRow(ByVal idx As Long) As Long
     End If
 End Function
 
+' ---------------------------------------------------------------------------
+' Cache management (private)
+' ---------------------------------------------------------------------------
+
 Private Sub FCV_ResetCache()
     mFCV_GroupCount = 0
+    mFCV_SFNCount = 0
     mFCV_CsetCount = 0
     mFCV_WarningGroupCount = 0
     mFCV_CacheValid = False
@@ -68,6 +105,10 @@ Private Sub FCV_AddCset(ByVal startRow As Long, ByVal endRow As Long, ByVal sfnV
     mFCV_CsetEndRows(mFCV_CsetCount) = endRow
     mFCV_CsetSFN(mFCV_CsetCount) = sfnVal
 End Sub
+
+' ---------------------------------------------------------------------------
+' Main function
+' ---------------------------------------------------------------------------
 
 Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Long
     Dim startTime As Double: startTime = Timer
@@ -91,10 +132,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim dictRXProc As Object
     Dim dictRXSigma As Object
 
-    Dim numIssues As Long, numWarnings As Long, numViolations As Long, writeRow As Long
-    Dim NumConstraintTypes As Long, NumWarningTypes As Long
+    Dim numIssues As Long, numWarnings As Long, numViolations As Long
     Dim groupHasViolation As Boolean, groupHasWarning As Boolean
-    Dim baseOutCol As Long, rxTableColStart As Long
+    Dim baseOutCol As Long
     Dim txIDs() As Long, rxStationIDs() As Long
     Dim txCount As Long, rxCount As Long
     Dim rxHasAny() As Boolean, capacitySum() As Long
@@ -108,9 +148,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Dim rowRxMinStation As Long
     Dim rxThreshold As Double
 
+    Dim violationRows As Collection, warningRows As Collection
+
     On Error GoTo CleanFail
-    NumConstraintTypes = 3
-    NumWarningTypes = 2
 
     Set wsExp = ThisWorkbook.Worksheets("ExpResults")
     Set tbl = wsExp.ListObjects("ExpResultsTable")
@@ -128,7 +168,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Set wsLog = ThisWorkbook.Worksheets("Conflict Resolution Log")
     On Error GoTo CleanFail
     If wsLog Is Nothing Then
-        Set wsLog = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.count))
+        Set wsLog = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
         wsLog.Name = "Conflict Resolution Log"
     End If
 
@@ -136,7 +176,6 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     If LenB(Trim$(FCV_title)) = 0 Then FCV_title = "Group Analysis BEFORE Conflict Resolution"
 
     baseOutCol = wsLog.Range(UCase$(Trim$(out_col)) & "1").Column
-    rxTableColStart = baseOutCol + 4
 
     maxSch = GetWorkbookNameLong("Nsch_per_subfr")
     nRx = GetWorkbookNameLong("Num_Rx_Stations")
@@ -258,83 +297,47 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
 
     If numViolations2Find = 0 Then
         wsLog.Range(wsLog.Cells(1, baseOutCol), wsLog.Cells(100000, baseOutCol + 25)).ClearContents
+
+        ' --- Title ---
         wsLog.Cells(1, baseOutCol).Value = FCV_title
         wsLog.Cells(1, baseOutCol).Font.Bold = True
+
+        ' --- Summary counts (row 3-8, updated after scan) ---
         wsLog.Cells(3, baseOutCol).Value = "Timestamp:"
         wsLog.Cells(3, baseOutCol + 1).Value = Now
-        wsLog.Cells(4, baseOutCol).Value = "Issues Found:"
+        wsLog.Cells(4, baseOutCol).Value = "Unique SFNs:"
         wsLog.Cells(4, baseOutCol + 1).Value = 0
-        wsLog.Cells(5, baseOutCol).Value = "Processing (s):"
-        wsLog.Cells(5, baseOutCol + 1).Value = ""
-        wsLog.Cells(6, baseOutCol).Value = "Num SFs with multiple TXs (Groups):"
+        wsLog.Cells(5, baseOutCol).Value = "SFs with multiple TXs (Groups):"
+        wsLog.Cells(5, baseOutCol + 1).Value = 0
+        wsLog.Cells(6, baseOutCol).Value = "Groups with Constraint Violations:"
         wsLog.Cells(6, baseOutCol + 1).Value = 0
-        wsLog.Cells(7, baseOutCol).Value = "Num Groups with Constraint Violations (Types 1-" & NumConstraintTypes & "):"
+        wsLog.Cells(7, baseOutCol).Value = "Groups with WARNINGS:"
         wsLog.Cells(7, baseOutCol + 1).Value = 0
-        wsLog.Cells(8, baseOutCol).Value = "Warning Groups (Types TXTIME/RXTIME; total types=" & NumWarningTypes & "):"
-        wsLog.Cells(8, baseOutCol + 1).Value = 0
-        wsLog.Cells(9, baseOutCol).Value = "Row"
-        wsLog.Cells(9, baseOutCol + 1).Value = "SFN"
-        wsLog.Cells(9, baseOutCol + 2).Value = "Type"
-        wsLog.Range(wsLog.Cells(9, baseOutCol), wsLog.Cells(9, baseOutCol + 2)).Font.Bold = True
+        wsLog.Cells(8, baseOutCol).Value = "Processing time (s):"
+        wsLog.Cells(8, baseOutCol + 1).Value = ""
+
+        ' --- Violation-type legend (rows 10-13) ---
+        wsLog.Cells(10, baseOutCol).Value = "VIOLATION TYPES:"
+        wsLog.Cells(10, baseOutCol).Font.Bold = True
+        wsLog.Cells(11, baseOutCol).Value = "TX-TX"
+        wsLog.Cells(11, baseOutCol + 1).Value = "Duplicate TX_ID values within SFN group"
+        wsLog.Cells(12, baseOutCol).Value = "TX-RX"
+        wsLog.Cells(12, baseOutCol + 1).Value = "TX/RX station ID overlap within SFN group"
+        wsLog.Cells(13, baseOutCol).Value = "NSR-OL"
+        wsLog.Cells(13, baseOutCol + 1).Value = "Number of subchannels exceeds Nsch capacity"
+
+        ' --- Warning-type legend (rows 15-17) ---
+        wsLog.Cells(15, baseOutCol).Value = "WARNING TYPES:"
+        wsLog.Cells(15, baseOutCol).Font.Bold = True
+        wsLog.Cells(16, baseOutCol).Value = "TXSFN>RXT"
+        wsLog.Cells(16, baseOutCol + 1).Value = "TX_SFN_est > min(RXTIME) - RXTproc + 3*sigma"
+        wsLog.Cells(17, baseOutCol).Value = "TXSFN-MTF"
+        wsLog.Cells(17, baseOutCol + 1).Value = "TX_SFN_est < ROUND(TXQTIME + TXTproc) - maxTX_SFN_est_decrement"
+
+        Set violationRows = New Collection
+        Set warningRows = New Collection
     End If
 
-    wsLog.Range(wsLog.Cells(3, rxTableColStart), wsLog.Cells(100000, rxTableColStart + 30)).ClearContents
-
-    wsLog.Cells(3, rxTableColStart).Value = "Station_ID"
-    wsLog.Cells(3, rxTableColStart + 1).Value = "PDU Length / RX Timing"
-
-    ' RX table: Station_ID + one column per unique resolved PDU value
-    Dim dictPDUUsed As Object, pduUsedKey As Variant
-    Set dictPDUUsed = CreateObject("Scripting.Dictionary")
-    dictPDUUsed.CompareMode = vbTextCompare
-
-    For i = 1 To UBound(data, 1)
-        If Not IsEmpty(data(i, idxLEN)) Then
-            rowLenKey = CStr(data(i, idxLEN))
-            If dictADU2PDU.Exists(rowLenKey) Then
-                pduKey = CStr(dictADU2PDU(rowLenKey))
-                dictPDUUsed(pduKey) = True
-            End If
-        End If
-    Next i
-
-    wsLog.Cells(3, rxTableColStart).Value = "Station_ID"
-    Dim pduHeaderCol As Long
-    pduHeaderCol = rxTableColStart + 1
-    For Each pduUsedKey In dictPDUUsed.Keys
-        wsLog.Cells(3, pduHeaderCol).Value = "PDU=" & CStr(pduUsedKey)
-        pduHeaderCol = pduHeaderCol + 1
-    Next pduUsedKey
-
-    Dim rxTableRow As Long, rxTableCol As Long, pduVal As String
-    rxTableRow = 4
-    For i = 1 To UBound(stationVendorData, 1)
-        If Not IsEmpty(stationVendorData(i, 1)) Then
-            stationIdNum = CLng(stationVendorData(i, 1))
-            wsLog.Cells(rxTableRow, rxTableColStart).Value = stationIdNum
-
-            rxTableCol = rxTableColStart + 1
-            For Each pduUsedKey In dictPDUUsed.Keys
-                pduVal = CStr(pduUsedKey)
-                If dictRXProc.Exists(CStr(stationIdNum) & "|" & pduVal) Then
-                    rxProcVal = CDbl(dictRXProc(CStr(stationIdNum) & "|" & pduVal))
-                Else
-                    rxProcVal = 0#
-                End If
-                If dictRXSigma.Exists(CStr(stationIdNum) & "|" & pduVal) Then
-                    rxSigmaVal = CDbl(dictRXSigma(CStr(stationIdNum) & "|" & pduVal))
-                Else
-                    rxSigmaVal = 0#
-                End If
-
-                wsLog.Cells(rxTableRow, rxTableCol).Value = "RXTproc=" & rxProcVal & " sigma=" & rxSigmaVal
-                rxTableCol = rxTableCol + 1
-            Next pduUsedKey
-            rxTableRow = rxTableRow + 1
-        End If
-    Next i
-
-    writeRow = 10
     numIssues = 0
     numWarnings = 0
     numViolations = 0
@@ -344,7 +347,7 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
     Do While i <= UBound(data, 1)
         currentSFN = data(i, idxSFN)
 
-        If IsEmpty(currentSFN) Or Trim$(CStr(currentSFN)) = "" Or val(currentSFN) = 0 Then
+        If IsEmpty(currentSFN) Or Trim$(CStr(currentSFN)) = "" Or Val(currentSFN) = 0 Then
             i = i + 1
             GoTo NextGroup
         End If
@@ -355,7 +358,8 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
             i = i + 1
         Loop
         endRow = i
-        mFCV_GroupCount = mFCV_GroupCount + 1
+        mFCV_SFNCount = mFCV_SFNCount + 1
+        If startRow < endRow Then mFCV_GroupCount = mFCV_GroupCount + 1
         groupHasViolation = False
         groupHasWarning = False
 
@@ -384,9 +388,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
                     If dictTXProc.Exists(CStr(txStationId)) Then
                         txtProc = CDbl(dictTXProc(CStr(txStationId)))
                         If txSfnVal < (Round(txQTime + txtProc) - maxTXDecrement) Then
-                            AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
-                                           startRow, currentSFN, "TXTIME", _
-                                           numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+                            AppendFCVIssue violationRows, warningRows, startRow, currentSFN, "TXSFN-MTF", _
+                                           numIssues, numWarnings, numViolations
+                            groupHasWarning = True
                             If numViolations2Find <> 0 Then
                                 FindConstraintViolations = numIssues
                                 Exit Function
@@ -452,9 +456,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
                 rxThreshold = rxMinTime - rxProc + 3# * rxSigma
 
                 If txSfnVal > rxThreshold Then
-                    AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
-                                   j, currentSFN, "RXTIME", _
-                                   numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+                    AppendFCVIssue violationRows, warningRows, j, currentSFN, "TXSFN>RXT", _
+                                   numIssues, numWarnings, numViolations
+                    groupHasWarning = True
                     If numViolations2Find <> 0 Then
                         FindConstraintViolations = numIssues
                         Exit Function
@@ -464,9 +468,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         Next j
 
         If Not IsUniqueLongList(txIDs, txCount) Then
-            AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
-                           startRow, currentSFN, "1", _
-                           numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+            AppendFCVIssue violationRows, warningRows, startRow, currentSFN, "TX-TX", _
+                           numIssues, numWarnings, numViolations
+            groupHasViolation = True
             If numViolations2Find <> 0 Then
                 FindConstraintViolations = numIssues
                 Exit Function
@@ -481,9 +485,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
         Next st
 
         If HasOverlap(txIDs, txCount, rxStationIDs, rxCount) Then
-            AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
-                           startRow, currentSFN, "2", _
-                           numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+            AppendFCVIssue violationRows, warningRows, startRow, currentSFN, "TX-RX", _
+                           numIssues, numWarnings, numViolations
+            groupHasViolation = True
             If numViolations2Find <> 0 Then
                 FindConstraintViolations = numIssues
                 Exit Function
@@ -492,9 +496,9 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
 
         For st = 1 To nRx
             If capacitySum(st) > maxSch Then
-                AppendFCVIssue wsLog, writeRow, numViolations2Find, baseOutCol, _
-                               startRow, currentSFN, "3", _
-                               numIssues, numWarnings, numViolations, groupHasWarning, groupHasViolation
+                AppendFCVIssue violationRows, warningRows, startRow, currentSFN, "NSR-OL", _
+                               numIssues, numWarnings, numViolations
+                groupHasViolation = True
                 If numViolations2Find <> 0 Then
                     FindConstraintViolations = numIssues
                     Exit Function
@@ -510,11 +514,15 @@ NextGroup:
     Loop
 
     If numViolations2Find = 0 Then
-        wsLog.Cells(4, baseOutCol + 1).Value = numIssues
-        wsLog.Cells(5, baseOutCol + 1).Value = Round(Timer - startTime, 3)
-        wsLog.Cells(6, baseOutCol + 1).Value = mFCV_GroupCount
-        wsLog.Cells(7, baseOutCol + 1).Value = mFCV_CsetCount
-        wsLog.Cells(8, baseOutCol + 1).Value = mFCV_WarningGroupCount
+        Dim writeRow As Long
+        writeRow = WriteFCVIssueSection(wsLog, 19, "VIOLATIONS", violationRows, baseOutCol)
+        WriteFCVIssueSection wsLog, writeRow, "WARNINGS", warningRows, baseOutCol
+
+        wsLog.Cells(4, baseOutCol + 1).Value = mFCV_SFNCount
+        wsLog.Cells(5, baseOutCol + 1).Value = mFCV_GroupCount
+        wsLog.Cells(6, baseOutCol + 1).Value = mFCV_CsetCount
+        wsLog.Cells(7, baseOutCol + 1).Value = mFCV_WarningGroupCount
+        wsLog.Cells(8, baseOutCol + 1).Value = Round(Timer - startTime, 3)
         wsLog.Cells(1, baseOutCol).Font.Bold = True
         wsLog.Range(wsLog.Cells(1, baseOutCol), wsLog.Cells(100000, baseOutCol + 25)).Columns.AutoFit
         mFCV_CacheValid = True
@@ -530,37 +538,64 @@ CleanFail:
     FindConstraintViolations = -1
 End Function
 
-Private Sub AppendFCVIssue(ByVal wsLog As Worksheet, ByRef writeRow As Long, ByVal numViolations2Find As Long, _
-                           ByVal baseOutCol As Long, ByVal rowValue As Variant, ByVal sfnValue As Variant, _
-                           ByVal issueType As String, ByRef numIssues As Long, ByRef numWarnings As Long, _
-                           ByRef numViolations As Long, ByRef groupHasWarning As Boolean, _
-                           ByRef groupHasViolation As Boolean)
-    Dim isWarning As Boolean
+' ---------------------------------------------------------------------------
+' Issue collection helper
+' ---------------------------------------------------------------------------
 
-    isWarning = IsFCVWarning(issueType)
+Private Sub AppendFCVIssue(ByRef violationRows As Collection, ByRef warningRows As Collection, _
+                           ByVal rowValue As Variant, ByVal sfnValue As Variant, _
+                           ByVal issueType As String, _
+                           ByRef numIssues As Long, ByRef numWarnings As Long, ByRef numViolations As Long)
+    Dim issueEntry As Variant
+    issueEntry = Array(rowValue, sfnValue, issueType)
     numIssues = numIssues + 1
 
-    If isWarning Then
+    If IsFCVWarning(issueType) Then
         numWarnings = numWarnings + 1
-        groupHasWarning = True
+        If Not warningRows Is Nothing Then warningRows.Add issueEntry
     Else
         numViolations = numViolations + 1
-        groupHasViolation = True
-    End If
-
-    If numViolations2Find = 0 Then
-        wsLog.Cells(writeRow, baseOutCol).Value = rowValue
-        wsLog.Cells(writeRow, baseOutCol + 1).Value = sfnValue
-        wsLog.Cells(writeRow, baseOutCol + 2).Value = issueType
-        writeRow = writeRow + 1
+        If Not violationRows Is Nothing Then violationRows.Add issueEntry
     End If
 End Sub
 
 Private Function IsFCVWarning(ByVal issueType As String) As Boolean
-    ' Type values TXTIME/RXTIME are treated as warnings; numeric types (1-3) are hard violations.
-    IsFCVWarning = (StrComp(Trim$(issueType), "TXTIME", vbTextCompare) = 0 Or _
-                    StrComp(Trim$(issueType), "RXTIME", vbTextCompare) = 0)
+    ' TXSFN>RXT and TXSFN-MTF are timing warnings; TX-TX, TX-RX, NSR-OL are hard violations.
+    IsFCVWarning = (StrComp(Trim$(issueType), "TXSFN>RXT", vbBinaryCompare) = 0 Or _
+                    StrComp(Trim$(issueType), "TXSFN-MTF", vbBinaryCompare) = 0)
 End Function
+
+Private Function WriteFCVIssueSection(ByVal wsLog As Worksheet, ByVal startRow As Long, _
+                                      ByVal sectionTitle As String, ByVal issues As Collection, _
+                                      ByVal baseCol As Long) As Long
+    Dim r As Long, i As Long
+    Dim issueEntry As Variant
+
+    r = startRow
+    wsLog.Cells(r, baseCol).Value = sectionTitle
+    wsLog.Cells(r, baseCol).Font.Bold = True
+    r = r + 1
+
+    wsLog.Cells(r, baseCol).Value = "Row"
+    wsLog.Cells(r, baseCol + 1).Value = "SFN"
+    wsLog.Cells(r, baseCol + 2).Value = "Type"
+    wsLog.Range(wsLog.Cells(r, baseCol), wsLog.Cells(r, baseCol + 2)).Font.Bold = True
+    r = r + 1
+
+    For i = 1 To issues.Count
+        issueEntry = issues(i)
+        wsLog.Cells(r, baseCol).Value = issueEntry(0)
+        wsLog.Cells(r, baseCol + 1).Value = issueEntry(1)
+        wsLog.Cells(r, baseCol + 2).Value = issueEntry(2)
+        r = r + 1
+    Next i
+
+    WriteFCVIssueSection = r + 1
+End Function
+
+' ---------------------------------------------------------------------------
+' Workbook name helpers
+' ---------------------------------------------------------------------------
 
 Private Function GetWorkbookNameLong(ByVal nameText As String) As Long
     Dim nm As Name, expr As String, v As Variant
