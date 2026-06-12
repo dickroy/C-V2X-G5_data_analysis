@@ -37,12 +37,11 @@ Public Sub Run_FCV()
                     "  [Yes] = BEFORE" & vbCrLf & _
                     "  [No]  = AFTER  (press Enter for default)", _
                     vbYesNo + vbQuestion + vbDefaultButton2, "FCV Run Timing")
+    out_col = "A"
     If answer = vbYes Then
         FCV_title = "Group Analysis BEFORE Conflict Resolution"
-        out_col = "A"
     Else
         FCV_title = "Group Analysis AFTER Conflict Resolution"
-        out_col = "A"
     End If
     Call FindConstraintViolations(0)
 End Sub
@@ -358,8 +357,8 @@ Public Function FindConstraintViolations(ByVal numViolations2Find As Long) As Lo
             i = i + 1
         Loop
         endRow = i
-        mFCV_SFNCount = mFCV_SFNCount + 1
-        If startRow < endRow Then mFCV_GroupCount = mFCV_GroupCount + 1
+        mFCV_SFNCount = mFCV_SFNCount + 1          ' total distinct SFN values seen
+        If startRow < endRow Then mFCV_GroupCount = mFCV_GroupCount + 1  ' SFNs with >1 TX row
         groupHasViolation = False
         groupHasWarning = False
 
@@ -561,8 +560,8 @@ End Sub
 
 Private Function IsFCVWarning(ByVal issueType As String) As Boolean
     ' TXSFN>RXT and TXSFN-MTF are timing warnings; TX-TX, TX-RX, NSR-OL are hard violations.
-    IsFCVWarning = (StrComp(Trim$(issueType), "TXSFN>RXT", vbBinaryCompare) = 0 Or _
-                    StrComp(Trim$(issueType), "TXSFN-MTF", vbBinaryCompare) = 0)
+    IsFCVWarning = (StrComp(Trim$(issueType), "TXSFN>RXT", vbTextCompare) = 0 Or _
+                    StrComp(Trim$(issueType), "TXSFN-MTF", vbTextCompare) = 0)
 End Function
 
 Private Function WriteFCVIssueSection(ByVal wsLog As Worksheet, ByVal startRow As Long, _
@@ -570,6 +569,11 @@ Private Function WriteFCVIssueSection(ByVal wsLog As Worksheet, ByVal startRow A
                                       ByVal baseCol As Long) As Long
     Dim r As Long, i As Long
     Dim issueEntry As Variant
+
+    If issues Is Nothing Or issues.Count = 0 Then
+        WriteFCVIssueSection = startRow
+        Exit Function
+    End If
 
     r = startRow
     wsLog.Cells(r, baseCol).Value = sectionTitle
