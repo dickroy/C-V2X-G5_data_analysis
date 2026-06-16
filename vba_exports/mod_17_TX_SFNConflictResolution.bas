@@ -1,7 +1,7 @@
 Option Explicit
 
-' Version: V1.0.6
-Private Const MODULE_VERSION_TXSFNCR As String = "V1.0.6"
+' Version: V2.0.0
+Private Const MODULE_VERSION_TXSFNCR As String = "V2.0.0"
 Private Const DEBUG_TXSFNCR As Boolean = False
 
 #If VBA7 Then

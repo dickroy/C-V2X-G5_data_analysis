@@ -2,7 +2,7 @@ Attribute VB_Name = "mod_01_PickExp"
 Option Explicit
 
 ' Module Name: PickExp
-' Status: V61.0.25 - dictA2P stores both NumSubchans and PDU length
+' Status: V2.0.0 - dictA2P stores both NumSubchans and PDU length
 ' Target: Excel 2024 LTSC
 '
 ' Key changes from V61.0.20:
@@ -79,6 +79,10 @@ Sub PickExperimentFileAndMapData()
     Dim startTime As Double, totalProcTime As Double, pipelineStart As Double, pipelineTime As Double
     Dim iviVal As Double
     Dim genTime As Double
+    Dim groupList As Object
+    Dim DoWLS As Boolean
+    Dim idxIVITimestamp As Long
+    Dim idxCamGenDtime As Long
     
     Dim perfLog As Object
     Set perfLog = CreateObject("Scripting.Dictionary")
@@ -413,6 +417,12 @@ Sub PickExperimentFileAndMapData()
         idxGN = .ListColumns("GN_TST").Index
         idxRxCnt = .ListColumns("RX_COUNT").Index
         idxTotLat = .ListColumns("AVG_TOTAL_LATENCY").Index
+        idxIVITimestamp = 0
+        idxCamGenDtime = 0
+        On Error Resume Next
+        idxIVITimestamp = .ListColumns("IVI_TIMESTAMP").Index
+        idxCamGenDtime = .ListColumns("CAM_GEN_DTIME").Index
+        On Error GoTo 0
         
         ReDim rxDataColIdx(1 To activeRxCount)
         For i = 1 To activeRxCount
@@ -456,6 +466,7 @@ Sub PickExperimentFileAndMapData()
 
     continueLoop = True
     prelimRendered = False
+    DoWLS = True
 
     Do While continueLoop
         txLoopChanged = False
@@ -465,10 +476,29 @@ Sub PickExperimentFileAndMapData()
         ' 1) INITIAL SFN ESTIMATION PASS
         ' -------------------------------
         Set sfnMap = CreateObject("Scripting.Dictionary")
+        Set groupList = CreateObject("Scripting.Dictionary")
         For targetR = 1 To filteredCount
-            GetSingleRowWLSCost targetR, 0
+            If DoWLS Then GetSingleRowWLSCost targetR, 0
             ProcessInitialEstimation targetR
+            If idxIVITimestamp > 0 And IsNumeric(data(targetR, idxIVITimestamp)) Then
+                iviVal = CDbl(data(targetR, idxIVITimestamp))
+            Else
+                iviVal = -1#
+            End If
+            If idxCamGenDtime > 0 And IsNumeric(data(targetR, idxCamGenDtime)) Then
+                genTime = CDbl(data(targetR, idxCamGenDtime))
+            Else
+                genTime = -1#
+            End If
+            If iviVal <> -1# Then
+                data(targetR, idxGen) = iviVal
+            ElseIf genTime <> -1# Then
+                data(targetR, idxGen) = genTime
+            Else
+                data(targetR, idxGen) = vbNullString
+            End If
             AddToMap targetR, CLng(data(targetR, idxSFNCol))
+            groupList(CStr(data(targetR, idxSFNCol))) = True
         Next targetR
 
         ' ------------------------------------------------
@@ -687,8 +717,25 @@ Sub PickExperimentFileAndMapData()
             Application.ScreenUpdating = False
             Set sfnMap = CreateObject("Scripting.Dictionary")
             For targetR = 1 To filteredCount
-                GetSingleRowWLSCost targetR, 0
+                If DoWLS Then GetSingleRowWLSCost targetR, 0
                 ProcessInitialEstimation targetR
+                If idxIVITimestamp > 0 And IsNumeric(data(targetR, idxIVITimestamp)) Then
+                    iviVal = CDbl(data(targetR, idxIVITimestamp))
+                Else
+                    iviVal = -1#
+                End If
+                If idxCamGenDtime > 0 And IsNumeric(data(targetR, idxCamGenDtime)) Then
+                    genTime = CDbl(data(targetR, idxCamGenDtime))
+                Else
+                    genTime = -1#
+                End If
+                If iviVal <> -1# Then
+                    data(targetR, idxGen) = iviVal
+                ElseIf genTime <> -1# Then
+                    data(targetR, idxGen) = genTime
+                Else
+                    data(targetR, idxGen) = vbNullString
+                End If
                 AddToMap targetR, CLng(data(targetR, idxSFNCol))
             Next targetR
         End If
